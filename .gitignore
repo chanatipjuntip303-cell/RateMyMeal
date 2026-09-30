@@ -62,3 +62,7 @@ BRIEF.md
 AGENTS.md
 agent.md
 design/
+
+# Local helper scripts
+*.bat
+
