@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,17 +7,80 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  Alert,
   TextInput,
   SafeAreaView,
   StatusBar,
   Modal,
+  useWindowDimensions,
+  Animated,
+  RefreshControl,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { supabase, Meal } from './supabase';
+import {
+  CameraIcon,
+  GalleryIcon,
+  HistoryIcon,
+  SettingsIcon,
+  FlameIcon,
+  RefreshIcon,
+  SwapIcon,
+  PlateIcon,
+  ProteinIcon,
+  CarbsIcon,
+  FatIcon,
+  CoachIcon,
+  CloudIcon,
+  KeyIcon,
+  EyeIcon,
+  CpuIcon,
+  FlaskIcon,
+  SaveIcon,
+  CheckIcon,
+  CloseIcon,
+  AlertIcon,
+  InfoIcon,
+  ChevronIcon,
+} from './Icons';
+
+// Strict 4-Color Palette: 50%, 30%, 10%, 10%
+const C50 = '#F9E6A8';        // 50% - Dominant Background & Canvas
+const C30 = '#F2A900';        // 30% - Cards, Surfaces & Containers
+const C10_ACCENT = '#CC6F00'; // 10% - Borders, Dividers & Accents
+const C10_DARK = '#4D2A00';   // 10% - Typography, Icons & Focal Contrast
+
+type TabType = 'scan' | 'history' | 'settings';
+
+interface ToastState {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'warning' | 'info';
+  title?: string;
+}
+
+interface DialogState {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+}
 
 export default function App() {
+  const { width: windowWidth } = useWindowDimensions();
+
+  // Responsive breakpoints
+  const isCompact = windowWidth < 380;
+  const contentWidth = Math.min(windowWidth - 32, 560);
+  const imagePreviewHeight = Math.min(contentWidth * 0.75, 320);
+
+  // Tab Navigation State
+  const [activeTab, setActiveTab] = useState<TabType>('scan');
+
+  // Core Data States
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -27,9 +90,9 @@ export default function App() {
   const [geminiApiKey, setGeminiApiKey] = useState<string>(
     process.env.EXPO_PUBLIC_GEMINI_API_KEY || ''
   );
-  const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
   const [recentMeals, setRecentMeals] = useState<Meal[]>([]);
-  const [showHistory, setShowHistory] = useState<boolean>(false);
+  const [refreshingHistory, setRefreshingHistory] = useState<boolean>(false);
+  const [expandedRoastId, setExpandedRoastId] = useState<string | null>(null);
 
   // Model & 503 Handling States
   const [currentModel, setCurrentModel] = useState<string>('gemini-3.8-flash');
@@ -38,23 +101,109 @@ export default function App() {
   const [pendingBase64, setPendingBase64] = useState<string | null>(null);
   const [switchedToLowerModel, setSwitchedToLowerModel] = useState<boolean>(false);
 
+  // Settings UI State
+  const [showApiKeyText, setShowApiKeyText] = useState<boolean>(false);
+
+  // Custom Toast & Dialog States
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [customDialog, setCustomDialog] = useState<DialogState | null>(null);
+
+  // Toast animation
+  const toastFadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Pulse animation for AI coach thinking card
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Bottom Tab Bar Sliding Transition Animation
+  const tabAnimValue = useRef(new Animated.Value(0)).current;
+  const [navBarWidth, setNavBarWidth] = useState<number>(0);
+
+  // Tab switch spring animation
+  useEffect(() => {
+    const targetIndex = activeTab === 'scan' ? 0 : activeTab === 'history' ? 1 : 2;
+    Animated.spring(tabAnimValue, {
+      toValue: targetIndex,
+      friction: 8,
+      tension: 65,
+      useNativeDriver: true,
+    }).start();
+  }, [activeTab]);
+
   useEffect(() => {
     fetchRecentMeals();
   }, []);
 
+  // Loading pulse animation
+  useEffect(() => {
+    if (loading) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.05,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 700,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    }
+  }, [loading]);
+
+  // Toast auto-dismiss effect
+  useEffect(() => {
+    if (toast) {
+      Animated.timing(toastFadeAnim, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+
+      const timer = setTimeout(() => {
+        Animated.timing(toastFadeAnim, {
+          toValue: 0,
+          duration: 250,
+          useNativeDriver: true,
+        }).start(() => setToast(null));
+      }, 3500);
+
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const showToast = (
+    message: string,
+    type: 'success' | 'error' | 'warning' | 'info' = 'info',
+    title?: string
+  ) => {
+    setToast({ id: Date.now(), message, type, title });
+  };
+
+  const showConfirmDialog = (options: Omit<DialogState, 'visible'>) => {
+    setCustomDialog({ ...options, visible: true });
+  };
+
   const fetchRecentMeals = async () => {
+    setRefreshingHistory(true);
     try {
       const { data, error } = await supabase
         .from('meals')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(5);
+        .limit(20);
 
       if (!error && data) {
         setRecentMeals(data as Meal[]);
       }
     } catch (err) {
       console.warn('Failed to fetch recent meals from Supabase', err);
+    } finally {
+      setRefreshingHistory(false);
     }
   };
 
@@ -80,13 +229,21 @@ export default function App() {
       if (useCamera) {
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
         if (status !== 'granted') {
-          Alert.alert('ต้องการการอนุญาต', 'กรุณาอนุญาตการเข้าถึงกล้องถ่ายรูป');
+          showToast(
+            'กรุณาเปิดการอนุญาตการเข้าถึงกล้องถ่ายรูปในการตั้งค่า',
+            'warning',
+            'ต้องการการอนุญาตกล้อง'
+          );
           return;
         }
       } else {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== 'granted') {
-          Alert.alert('ต้องการการอนุญาต', 'กรุณาอนุญาตการเข้าถึงคลังภาพ');
+          showToast(
+            'กรุณาเปิดการอนุญาตการเข้าถึงคลังภาพในการตั้งค่า',
+            'warning',
+            'ต้องการการอนุญาตคลังภาพ'
+          );
           return;
         }
       }
@@ -95,7 +252,7 @@ export default function App() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [4, 3],
-        quality: 0.6, // Per AGENTS.md rule: compress to quality 0.6
+        quality: 0.6,
         base64: true,
       };
 
@@ -118,7 +275,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      Alert.alert('เกิดข้อผิดพลาด', 'ไม่สามารถเลือกรูปภาพได้');
+      showToast('ไม่สามารถเลือกรูปภาพได้ กรุณาลองใหม่อีกครั้ง', 'error', 'เกิดข้อผิดพลาด');
       console.error(err);
     }
   };
@@ -130,8 +287,13 @@ export default function App() {
   ) => {
     const keyToUse = geminiApiKey.trim();
     if (!keyToUse) {
-      setShowKeyModal(true);
-      Alert.alert('ต้องระบุ Gemini API Key', 'กรุณากรอก Gemini API Key เพื่อเริ่มวิเคราะห์');
+      showConfirmDialog({
+        title: 'ต้องระบุ Gemini API Key',
+        message: 'กรุณากรอก Gemini API Key เพื่อให้ AI เริ่มวิเคราะห์จานอาหาร',
+        confirmText: 'ไปหน้าตั้งค่า',
+        cancelText: 'ยกเลิก',
+        onConfirm: () => setActiveTab('settings'),
+      });
       return;
     }
 
@@ -139,8 +301,8 @@ export default function App() {
     setLoading(true);
     setLoadingStep(
       isFallbackAttempt
-        ? `กำลังสลับใช้โมเดล ${modelToUse} (โมเดลสำรองช่วง Traffic เต็ม)... ⚡`
-        : 'เทรนเนอร์กำลังจ้องดูจานข้าวของคุณ... 👀'
+        ? `กำลังสลับใช้โมเดล ${modelToUse} (โมเดลสำรองช่วง Traffic เต็ม)...`
+        : 'เทรนเนอร์กำลังจ้องดูจานข้าวของคุณ...'
     );
     setSyncStatus('idle');
 
@@ -173,7 +335,7 @@ export default function App() {
         },
       };
 
-      setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน... 🔥');
+      setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน...');
       let result;
       try {
         result = await model.generateContent([prompt, imagePart]);
@@ -202,10 +364,11 @@ export default function App() {
           throw geminiErr;
         }
       }
+
       const responseText = result.response.text();
       const serverModelVersion = (result.response as any)?.modelVersion;
-      const verifiedModelName = serverModelVersion 
-        ? `${modelToUse} (v: ${serverModelVersion})` 
+      const verifiedModelName = serverModelVersion
+        ? `${modelToUse} (v: ${serverModelVersion})`
         : modelToUse;
 
       let parsed: Meal;
@@ -216,39 +379,41 @@ export default function App() {
         throw new Error('รูปแบบข้อมูล AI ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
       }
 
-      const isLowerFallback = isFallbackAttempt || modelToUse.includes('3.6') || modelToUse.includes('8b');
+      const isLowerFallback =
+        isFallbackAttempt || modelToUse.includes('3.6') || modelToUse.includes('8b');
       setMealData(parsed);
       setResultModel(verifiedModelName);
       setCurrentModel(modelToUse);
       setSwitchedToLowerModel(isLowerFallback);
 
       if (isLowerFallback) {
-        Alert.alert(
-          '✨ วิเคราะห์สำเร็จด้วยโมเดลสำรอง',
-          `ผลลัพธ์นี้ประมวลผลโดยโมเดล: ${verifiedModelName}\n(เปลี่ยนมาใช้เนื่องจากโมเดลหลัก Traffic เต็ม / Error 503)`
+        showToast(
+          `ประมวลผลด้วยโมเดลสำรอง ${verifiedModelName} เรียบร้อย`,
+          'info',
+          'Traffic Fallback Active'
         );
+      } else {
+        showToast(`วิเคราะห์ ${parsed.dish_name} สำเร็จ!`, 'success', 'วิเคราะห์เสร็จสิ้น');
       }
 
       // Auto-sync to Supabase meals table
       setSyncStatus('syncing');
-      const { data: insertedData, error: dbError } = await supabase
-        .from('meals')
-        .insert([
-          {
-            dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
-            calories: Math.round(Number(parsed.calories) || 0),
-            protein: parseFloat(String(parsed.protein || 0)),
-            carbs: parseFloat(String(parsed.carbs || 0)),
-            fat: parseFloat(String(parsed.fat || 0)),
-            health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
-            roast_comment: parsed.roast_comment || '',
-          },
-        ])
-        .select();
+      const { error: dbError } = await supabase.from('meals').insert([
+        {
+          dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
+          calories: Math.round(Number(parsed.calories) || 0),
+          protein: parseFloat(String(parsed.protein || 0)),
+          carbs: parseFloat(String(parsed.carbs || 0)),
+          fat: parseFloat(String(parsed.fat || 0)),
+          health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
+          roast_comment: parsed.roast_comment || '',
+        },
+      ]);
 
       if (dbError) {
         console.warn('Supabase insert warning:', dbError.message);
         setSyncStatus('error');
+        showToast('ไม่สามารถบันทึกประวัติลง Supabase ได้', 'warning', 'Sync Issue');
       } else {
         setSyncStatus('synced');
         fetchRecentMeals();
@@ -262,9 +427,10 @@ export default function App() {
         setShow503Modal(true);
         return;
       }
-      Alert.alert(
-        'วิเคราะห์ไม่สำเร็จ',
-        err.message || 'ไม่สามารถวิเคราะห์อาหารได้ กรุณาตรวจสอบรูปภาพและ API Key'
+      showToast(
+        err.message || 'ไม่สามารถวิเคราะห์อาหารได้ กรุณาตรวจสอบรูปภาพและ API Key',
+        'error',
+        'วิเคราะห์ไม่สำเร็จ'
       );
       setSyncStatus('error');
     } finally {
@@ -281,384 +447,860 @@ export default function App() {
     if (dataToUse) {
       analyzeMealWithGemini(dataToUse, lowerModel, true);
     } else {
-      Alert.alert(
-        'สลับไปใช้โมเดลที่ต่ำกว่าแล้ว',
-        `ตั้งค่าโมเดลเป็น ${lowerModel} เรียบร้อย กรุณาถ่ายหรือเลือกรูปภาพเพื่อเริ่มวิเคราะห์`
-      );
+      showToast(`ตั้งค่าเป็น ${lowerModel} เรียบร้อย กรุณาเลือกรูปภาพ`, 'info', 'เปลี่ยนโมเดลแล้ว');
     }
   };
 
   const handleSwitchApiKey = () => {
     setShow503Modal(false);
-    setShowKeyModal(true);
+    setActiveTab('settings');
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 8) return '#10B981'; // Green
-    if (score >= 5) return '#F59E0B'; // Amber
-    return '#EF4444'; // Red
+  const calculateMacroPercentages = (protein: number, carbs: number, fat: number) => {
+    const p = Math.max(0, protein);
+    const c = Math.max(0, carbs);
+    const f = Math.max(0, fat);
+    const total = p + c + f;
+    if (total === 0) return { pPct: 33, cPct: 34, fPct: 33 };
+    const pPct = Math.round((p / total) * 100);
+    const cPct = Math.round((c / total) * 100);
+    const fPct = Math.max(0, 100 - pPct - cPct);
+    return { pPct, cPct, fPct };
   };
+
+  // Tab Bar Sliding Capsule Width
+  const effectiveBarWidth = navBarWidth > 0 ? navBarWidth : Math.min(contentWidth, 500);
+  const computedTabWidth = Math.max(0, (effectiveBarWidth - 16) / 3);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#121214" />
-      <ScrollView contentContainerStyle={styles.container} bounces={false}>
-        {/* Header */}
-        <View style={styles.header}>
+      <StatusBar barStyle="dark-content" backgroundColor={C50} />
+
+      {/* App Header */}
+      <View style={[styles.header, { maxWidth: contentWidth }]}>
+        {/* Tier 1: Brand Identity & Model Status Pill */}
+        <View style={styles.headerTopRow}>
           <View style={styles.titleRow}>
-            <Text style={styles.logoIcon}>🔥</Text>
-            <View>
-              <Text style={styles.title}>RATE MY MEAL</Text>
-              <Text style={styles.subtitle}>AI Roast & Macro Coach (เทรนเนอร์ปากจัด)</Text>
+            <View style={styles.logoBadge}>
+              <FlameIcon size={16} color={C10_DARK} />
+              <Text style={styles.logoBadgeText}>RMM</Text>
             </View>
+            <Text style={[styles.title, isCompact && { fontSize: 18 }]}>RATE MY MEAL</Text>
           </View>
+
+          {/* Model & Key Status Badge Button */}
           <TouchableOpacity
-            style={styles.keyBtn}
-            onPress={() => setShowKeyModal(true)}
+            style={styles.headerStatusPill}
+            onPress={() => setActiveTab('settings')}
             activeOpacity={0.7}
           >
-            <Text style={styles.keyBtnText}>
-              ⚙️ {geminiApiKey ? 'API Key OK' : 'ตั้งค่า Key'}
-              {currentModel.includes('3.6') ? ' ⚡(3.6)' : ''}
+            <View
+              style={[
+                styles.headerStatusIndicator,
+                {
+                  backgroundColor: geminiApiKey
+                    ? switchedToLowerModel
+                      ? C10_ACCENT
+                      : C10_DARK
+                    : C10_ACCENT,
+                },
+              ]}
+            />
+            <Text style={styles.headerStatusText}>
+              {geminiApiKey
+                ? switchedToLowerModel
+                  ? '3.6 Flash'
+                  : '3.8 Flash'
+                : 'ตั้งค่า Key'}
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Image Picker Section */}
-        <View style={styles.imageCard}>
-          {imageUri ? (
-            <View style={styles.previewContainer}>
-              <Image source={{ uri: imageUri }} style={styles.previewImage} resizeMode="cover" />
-              <View style={styles.actionBtnRow}>
-                <TouchableOpacity
-                  style={[styles.btn, styles.btnSecondary]}
-                  onPress={() => pickImage(false)}
-                  disabled={loading}
-                >
-                  <Text style={styles.btnSecondaryText}>🖼️ เปลี่ยนรูป</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.btn, styles.btnPrimary]}
-                  onPress={() => {
-                    if (imageBase64) analyzeMealWithGemini(imageBase64, currentModel);
-                  }}
-                  disabled={loading}
-                >
-                  <Text style={styles.btnPrimaryText}>⚡ สแกนซ้ำ</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            <View style={styles.placeholderBox}>
-              <Text style={styles.placeholderEmoji}>🥗 🍗 🍕</Text>
-              <Text style={styles.placeholderTitle}>ถ่ายหรือเลือกรูปมื้ออาหารของคุณ</Text>
-              <Text style={styles.placeholderSub}>
-                เตรียมใจให้พร้อมรับคำด่าจากเทรนเนอร์สายโหด!
-              </Text>
+        {/* Tier 2: Subtitle Banner */}
+        <View style={styles.headerBottomRow}>
+          <Text style={styles.subtitle} numberOfLines={1} adjustsFontSizeToFit>
+            AI Roast & Macro Coach • เทรนเนอร์สายโหด
+          </Text>
+        </View>
+      </View>
 
-              <View style={styles.pickerActions}>
+      {/* Main Body Content based on Active Tab */}
+      <ScrollView
+        contentContainerStyle={[styles.container, { maxWidth: contentWidth }]}
+        bounces={true}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          activeTab === 'history' ? (
+            <RefreshControl
+              refreshing={refreshingHistory}
+              onRefresh={fetchRecentMeals}
+              tintColor={C10_DARK}
+              colors={[C10_DARK]}
+            />
+          ) : undefined
+        }
+      >
+        {/* TAB 1: SCAN FOOD */}
+        {activeTab === 'scan' && (
+          <View style={styles.tabContentWrapper}>
+            {imageUri ? (
+              <View style={styles.previewContainer}>
+                <Image
+                  source={{ uri: imageUri }}
+                  style={[styles.previewImage, { height: imagePreviewHeight }]}
+                  resizeMode="cover"
+                />
+                <View style={styles.actionBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.btnSecondary]}
+                    onPress={() => pickImage(false)}
+                    disabled={loading}
+                    activeOpacity={0.8}
+                  >
+                    <SwapIcon size={16} color={C10_DARK} />
+                    <Text style={styles.btnSecondaryText}>เปลี่ยนรูป</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.btnPrimary]}
+                    onPress={() => {
+                      if (imageBase64) analyzeMealWithGemini(imageBase64, currentModel);
+                    }}
+                    disabled={loading}
+                    activeOpacity={0.8}
+                  >
+                    <RefreshIcon size={16} color={C50} />
+                    <Text style={styles.btnPrimaryText}>สแกนซ้ำ</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.heroDropZone}>
+                <View style={styles.scannerGraphicBox}>
+                  <View style={styles.scannerCornerTopLeft} />
+                  <View style={styles.scannerCornerTopRight} />
+                  <View style={styles.scannerCornerBottomLeft} />
+                  <View style={styles.scannerCornerBottomRight} />
+                  <CameraIcon size={26} color={C10_DARK} />
+                  <Text style={styles.scannerGraphicText}>MEAL SCAN</Text>
+                </View>
+
+                <Text style={[styles.heroTitle, isCompact && { fontSize: 17 }]}>
+                  ให้ AI วิเคราะห์มื้อนี้ & รับฟังคำด่า
+                </Text>
+                <Text style={styles.heroSubtitle}>
+                  ถ่ายรูปจานข้าวของคุณแบบชัดๆ ให้เทรนเนอร์ตรวจเช็กแคลอรี่และสารอาหาร
+                </Text>
+
+                {/* Big Shutter Button */}
                 <TouchableOpacity
-                  style={[styles.btn, styles.btnPrimary, { flex: 1, marginRight: 8 }]}
+                  style={[styles.heroShutterBtn, isCompact && { paddingVertical: 14 }]}
                   onPress={() => pickImage(true)}
                   disabled={loading}
+                  activeOpacity={0.85}
                 >
-                  <Text style={styles.btnPrimaryText}>📸 ถ่ายรูป</Text>
+                  <CameraIcon size={20} color={C50} />
+                  <Text style={styles.heroShutterText}>เปิดกล้องถ่ายรูปจานนี้</Text>
                 </TouchableOpacity>
 
+                {/* Secondary Gallery Button */}
                 <TouchableOpacity
-                  style={[styles.btn, styles.btnSecondary, { flex: 1, marginLeft: 8 }]}
+                  style={styles.heroGalleryBtn}
                   onPress={() => pickImage(false)}
                   disabled={loading}
+                  activeOpacity={0.7}
                 >
-                  <Text style={styles.btnSecondaryText}>🖼️ คลังภาพ</Text>
+                  <GalleryIcon size={18} color={C10_DARK} />
+                  <Text style={styles.heroGalleryText}>เลือกจากคลังภาพ</Text>
                 </TouchableOpacity>
               </View>
-            </View>
-          )}
-        </View>
+            )}
 
-        {/* Loading Indicator */}
-        {loading && (
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#FF5722" />
-            <Text style={styles.loadingText}>{loadingStep}</Text>
-          </View>
-        )}
-
-        {/* Roast Result Card */}
-        {mealData && !loading && (
-          <View style={styles.resultCard}>
-            {/* Model Origin Badge */}
-            {resultModel && (
-              <View
+            {/* Loading / AI Analyzing State */}
+            {loading && (
+              <Animated.View
                 style={[
-                  styles.modelInfoCard,
-                  switchedToLowerModel || resultModel.includes('3.6') || resultModel.includes('8b')
-                    ? styles.modelInfoCardFallback
-                    : styles.modelInfoCardNormal,
+                  styles.loadingCard,
+                  {
+                    transform: [{ scale: pulseAnim }],
+                  },
                 ]}
               >
-                <Text style={styles.modelInfoEmoji}>
-                  {switchedToLowerModel || resultModel.includes('3.6') || resultModel.includes('8b') ? '⚡' : '🤖'}
-                </Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.modelInfoLabel}>
-                    {switchedToLowerModel || resultModel.includes('3.6') || resultModel.includes('8b')
-                      ? 'ผลลัพธ์นี้ได้จากโมเดลระดับต่ำกว่า (Traffic Fallback):'
-                      : 'ผลลัพธ์นี้ประมวลผลโดยโมเดล:'}
-                  </Text>
-                  <Text
+                <View style={styles.loadingSpinnerWrapper}>
+                  <ActivityIndicator size="large" color={C10_DARK} />
+                </View>
+                <Text style={styles.loadingStepTitle}>เทรนเนอร์กำลังตรวจสอบ</Text>
+                <Text style={styles.loadingStepSub}>{loadingStep}</Text>
+
+                <View style={styles.stepDotsRow}>
+                  <View style={[styles.stepDot, styles.stepDotActive]} />
+                  <View
                     style={[
-                      styles.modelInfoValue,
-                      {
-                        color:
-                          switchedToLowerModel || resultModel.includes('3.6') || resultModel.includes('8b')
-                            ? '#FBBF24'
-                            : '#34D399',
-                      },
+                      styles.stepDot,
+                      loadingStep.includes('คำนวณ') && styles.stepDotActive,
                     ]}
-                  >
-                    {resultModel}
-                    {switchedToLowerModel || resultModel.includes('3.6')
-                      ? ' (Gemini 3.6 Flash: โหมดสำรองช่วง Traffic เต็ม)'
-                      : ''}
-                  </Text>
+                  />
+                  <View style={styles.stepDot} />
+                </View>
+              </Animated.View>
+            )}
+
+            {/* AI Roast Result Hero Card */}
+            {mealData && !loading && (
+              <View style={styles.resultCard}>
+                {resultModel && (
+                  <View style={styles.modelInfoCard}>
+                    <View style={styles.modelInfoBadge}>
+                      <CpuIcon size={13} color={C50} />
+                      <Text style={styles.modelInfoBadgeText}>
+                        {switchedToLowerModel ||
+                        resultModel.includes('3.6') ||
+                        resultModel.includes('8b')
+                          ? 'FALLBACK'
+                          : 'AI'}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelInfoLabel}>
+                        {switchedToLowerModel ||
+                        resultModel.includes('3.6') ||
+                        resultModel.includes('8b')
+                          ? 'Traffic Fallback (รุ่นสำรองประมวลผลไว):'
+                          : 'ผลลัพธ์นี้วิเคราะห์โดย AI โมเดล:'}
+                      </Text>
+                      <Text style={styles.modelInfoValue}>{resultModel}</Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Dish Identity & Health Score Meter */}
+                <View style={styles.resultHeader}>
+                  <View style={{ flex: 1, marginRight: 12 }}>
+                    <View style={styles.dishBadgeRow}>
+                      <PlateIcon size={14} color={C10_DARK} />
+                      <Text style={styles.dishBadge}>เมนูที่ระบุได้</Text>
+                    </View>
+                    <Text style={[styles.dishName, isCompact && { fontSize: 20 }]}>
+                      {mealData.dish_name}
+                    </Text>
+                  </View>
+
+                  <View style={styles.scoreBadge}>
+                    <Text style={styles.scoreNumber}>{mealData.health_score}</Text>
+                    <Text style={styles.scoreMax}>/10 คะแนน</Text>
+                  </View>
+                </View>
+
+                {/* Calories Mega Banner */}
+                <View style={styles.caloriesBanner}>
+                  <View style={styles.caloriesHeaderRow}>
+                    <FlameIcon size={14} color={C10_ACCENT} />
+                    <Text style={styles.caloriesLabel}>พลังงานทั้งหมดโดยประมาณ</Text>
+                  </View>
+                  <View style={styles.caloriesRow}>
+                    <Text style={[styles.caloriesValue, isCompact && { fontSize: 36 }]}>
+                      {mealData.calories}
+                    </Text>
+                    <Text style={styles.caloriesUnit}>KCAL</Text>
+                  </View>
+                </View>
+
+                {/* Dynamic Visual Macro Ratio Bar */}
+                {(() => {
+                  const { pPct, cPct, fPct } = calculateMacroPercentages(
+                    mealData.protein,
+                    mealData.carbs,
+                    mealData.fat
+                  );
+                  return (
+                    <View style={styles.macroRatioSection}>
+                      <View style={styles.macroRatioHeader}>
+                        <Text style={styles.macroRatioTitle}>สัดส่วนสารอาหาร (Macro Ratio)</Text>
+                        <Text style={styles.macroRatioTotal}>
+                          รวม {Math.round(mealData.protein + mealData.carbs + mealData.fat)}g
+                        </Text>
+                      </View>
+
+                      <View style={styles.macroRatioBarContainer}>
+                        <View
+                          style={[
+                            styles.macroRatioSegment,
+                            { flex: pPct, backgroundColor: C10_DARK },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.macroRatioSegment,
+                            { flex: cPct, backgroundColor: C10_ACCENT },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.macroRatioSegment,
+                            { flex: fPct, backgroundColor: C30 },
+                          ]}
+                        />
+                      </View>
+
+                      <View style={styles.macroRatioPercentRow}>
+                        <Text style={[styles.macroRatioPercentText, { color: C10_DARK }]}>
+                          โปรตีน {pPct}%
+                        </Text>
+                        <Text style={[styles.macroRatioPercentText, { color: C10_ACCENT }]}>
+                          คาร์บ {cPct}%
+                        </Text>
+                        <Text style={[styles.macroRatioPercentText, { color: C10_DARK }]}>
+                          ไขมัน {fPct}%
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+
+                {/* Macro Nutrients Grid */}
+                <View style={styles.macrosContainer}>
+                  <View style={[styles.macroItem, { borderLeftColor: C10_DARK }]}>
+                    <View style={styles.macroTitleRow}>
+                      <ProteinIcon size={13} color={C10_DARK} />
+                      <Text style={styles.macroTitle}>โปรตีน (P)</Text>
+                    </View>
+                    <Text style={[styles.macroValue, { color: C10_DARK }]}>
+                      {mealData.protein} <Text style={styles.unitText}>g</Text>
+                    </Text>
+                  </View>
+
+                  <View style={[styles.macroItem, { borderLeftColor: C10_ACCENT }]}>
+                    <View style={styles.macroTitleRow}>
+                      <CarbsIcon size={13} color={C10_ACCENT} />
+                      <Text style={styles.macroTitle}>คาร์บ (C)</Text>
+                    </View>
+                    <Text style={[styles.macroValue, { color: C10_ACCENT }]}>
+                      {mealData.carbs} <Text style={styles.unitText}>g</Text>
+                    </Text>
+                  </View>
+
+                  <View style={[styles.macroItem, { borderLeftColor: C10_DARK }]}>
+                    <View style={styles.macroTitleRow}>
+                      <FatIcon size={13} color={C10_DARK} />
+                      <Text style={styles.macroTitle}>ไขมัน (F)</Text>
+                    </View>
+                    <Text style={[styles.macroValue, { color: C10_DARK }]}>
+                      {mealData.fat} <Text style={styles.unitText}>g</Text>
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Trainer Roast Speech Bubble Section */}
+                <View style={styles.roastSection}>
+                  <View style={styles.roastHeader}>
+                    <View style={styles.roastAvatarBadge}>
+                      <CoachIcon size={15} color={C50} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.roastAuthor}>คำบ่นจากเทรนเนอร์สายโหด:</Text>
+                      <Text style={styles.roastAuthorSub}>ประเมินความฟิตของจานนี้</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.roastBubble}>
+                    <View style={styles.speechBubblePointer} />
+                    <Text style={[styles.roastComment, isCompact && { fontSize: 14 }]}>
+                      "{mealData.roast_comment}"
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Supabase Sync Status Indicator */}
+                <View style={styles.syncRow}>
+                  <CloudIcon size={14} color={syncStatus === 'synced' ? C10_DARK : C10_ACCENT} />
+                  {syncStatus === 'syncing' && (
+                    <Text style={styles.syncSyncing}>กำลังบันทึกข้อมูลลง Supabase...</Text>
+                  )}
+                  {syncStatus === 'synced' && (
+                    <Text style={styles.syncSuccess}>ซิงค์เข้าฐานข้อมูล Supabase เรียบร้อย</Text>
+                  )}
+                  {syncStatus === 'error' && (
+                    <Text style={styles.syncError}>ซิงค์ข้อมูลเข้า Supabase ไม่สำเร็จ</Text>
+                  )}
                 </View>
               </View>
             )}
-
-            {/* Dish Title & Health Score */}
-            <View style={styles.resultHeader}>
-              <View style={{ flex: 1, marginRight: 8 }}>
-                <Text style={styles.dishBadge}>🍽️ จานนี้คือ</Text>
-                <Text style={styles.dishName}>{mealData.dish_name}</Text>
-              </View>
-              <View
-                style={[
-                  styles.scoreBadge,
-                  { borderColor: getScoreColor(mealData.health_score) },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.scoreNumber,
-                    { color: getScoreColor(mealData.health_score) },
-                  ]}
-                >
-                  {mealData.health_score}
-                </Text>
-                <Text style={styles.scoreMax}>/10 คะแนน</Text>
-              </View>
-            </View>
-
-            {/* Calories Banner */}
-            <View style={styles.caloriesBanner}>
-              <Text style={styles.caloriesLabel}>พลังงานทั้งหมดโดยประมาณ</Text>
-              <View style={styles.caloriesRow}>
-                <Text style={styles.caloriesValue}>{mealData.calories}</Text>
-                <Text style={styles.caloriesUnit}>KCAL</Text>
-              </View>
-            </View>
-
-            {/* Macro Nutrients */}
-            <View style={styles.macrosContainer}>
-              <View style={[styles.macroItem, { borderLeftColor: '#3B82F6' }]}>
-                <Text style={styles.macroTitle}>โปรตีน (Protein)</Text>
-                <Text style={[styles.macroValue, { color: '#60A5FA' }]}>
-                  {mealData.protein} <Text style={styles.unitText}>g</Text>
-                </Text>
-              </View>
-              <View style={[styles.macroItem, { borderLeftColor: '#F59E0B' }]}>
-                <Text style={styles.macroTitle}>คาร์บ (Carbs)</Text>
-                <Text style={[styles.macroValue, { color: '#FBBF24' }]}>
-                  {mealData.carbs} <Text style={styles.unitText}>g</Text>
-                </Text>
-              </View>
-              <View style={[styles.macroItem, { borderLeftColor: '#EC4899' }]}>
-                <Text style={styles.macroTitle}>ไขมัน (Fat)</Text>
-                <Text style={[styles.macroValue, { color: '#F472B6' }]}>
-                  {mealData.fat} <Text style={styles.unitText}>g</Text>
-                </Text>
-              </View>
-            </View>
-
-            {/* Trainer Roast Bubble */}
-            <View style={styles.roastBubble}>
-              <View style={styles.roastHeader}>
-                <Text style={styles.roastIcon}>🗣️</Text>
-                <Text style={styles.roastAuthor}>คำบ่นจากเทรนเนอร์สายโหด:</Text>
-              </View>
-              <Text style={styles.roastComment}>"{mealData.roast_comment}"</Text>
-            </View>
-
-            {/* Supabase Sync Status */}
-            <View style={styles.syncRow}>
-              {syncStatus === 'syncing' && (
-                <Text style={styles.syncSyncing}>⏳ กำลังบันทึกข้อมูลลง Supabase...</Text>
-              )}
-              {syncStatus === 'synced' && (
-                <Text style={styles.syncSuccess}>✅ ซิงค์เข้าฐานข้อมูล Supabase เรียบร้อย</Text>
-              )}
-              {syncStatus === 'error' && (
-                <Text style={styles.syncError}>⚠️ ซิงค์ข้อมูลเข้า Supabase ไม่สำเร็จ</Text>
-              )}
-            </View>
           </View>
         )}
 
-        {/* Recent Meals Section */}
-        {recentMeals.length > 0 && (
-          <View style={styles.historySection}>
-            <TouchableOpacity
-              style={styles.historyHeader}
-              onPress={() => setShowHistory(!showHistory)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.historyTitle}>📜 ประวัติมื้อที่เคยโดนสวด ({recentMeals.length})</Text>
-              <Text style={styles.historyToggle}>{showHistory ? '▲ ย่อ' : '▼ ดู'}</Text>
-            </TouchableOpacity>
+        {/* TAB 2: MEAL HISTORY LOG */}
+        {activeTab === 'history' && (
+          <View style={styles.tabContentWrapper}>
+            <View style={styles.historyHeaderBar}>
+              <View>
+                <Text style={styles.sectionHeading}>ประวัติมื้อที่เคยโดนสวด</Text>
+                <Text style={styles.sectionSubHeading}>
+                  บันทึกทั้งหมด {recentMeals.length} มื้อล่าสุดจาก Supabase
+                </Text>
+              </View>
 
-            {showHistory && (
+              <TouchableOpacity
+                style={styles.refreshIconBtn}
+                onPress={fetchRecentMeals}
+                disabled={refreshingHistory}
+                activeOpacity={0.7}
+              >
+                <RefreshIcon size={14} color={C10_DARK} />
+                <Text style={styles.refreshIconText}>รีเฟรช</Text>
+              </TouchableOpacity>
+            </View>
+
+            {recentMeals.length === 0 ? (
+              <View style={styles.emptyHistoryBox}>
+                <View style={styles.emptyGraphicCircle}>
+                  <PlateIcon size={28} color={C10_DARK} />
+                </View>
+                <Text style={styles.emptyHistoryTitle}>ยังไม่มีประวัติมื้ออาหาร</Text>
+                <Text style={styles.emptyHistorySub}>
+                  ถ่ายภาพมื้อแรกของคุณเพื่อให้เทรนเนอร์เริ่มบันทึกและ Roast มื้ออาหาร
+                </Text>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.btnPrimary, { marginTop: 16 }]}
+                  onPress={() => setActiveTab('scan')}
+                >
+                  <CameraIcon size={16} color={C50} />
+                  <Text style={styles.btnPrimaryText}>ไปที่หน้าสแกนอาหาร</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
               <View style={styles.historyList}>
-                {recentMeals.map((item, index) => (
-                  <View key={item.id || index} style={styles.historyItem}>
-                    <View style={styles.historyTop}>
-                      <Text style={styles.historyDish}>{item.dish_name}</Text>
-                      <Text
-                        style={[
-                          styles.historyScore,
-                          { color: getScoreColor(item.health_score) },
-                        ]}
-                      >
-                        {item.health_score}/10
-                      </Text>
-                    </View>
-                    <Text style={styles.historyCal}>{item.calories} kcal | P: {item.protein}g C: {item.carbs}g F: {item.fat}g</Text>
-                    <Text style={styles.historyRoast} numberOfLines={2}>
-                      💬 {item.roast_comment}
-                    </Text>
-                  </View>
-                ))}
+                {recentMeals.map((item, index) => {
+                  const itemId = item.id || `meal-${index}`;
+                  const isExpanded = expandedRoastId === itemId;
+                  const dateStr = item.created_at
+                    ? new Date(item.created_at).toLocaleDateString('th-TH', {
+                        day: 'numeric',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : 'เมื่อสักครู่';
+
+                  return (
+                    <TouchableOpacity
+                      key={itemId}
+                      style={styles.historyCard}
+                      onPress={() => setExpandedRoastId(isExpanded ? null : itemId)}
+                      activeOpacity={0.85}
+                    >
+                      {/* Top Row: Dish Name + Score Badge */}
+                      <View style={styles.historyCardTop}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={styles.historyDishTitle}>{item.dish_name}</Text>
+                          <View style={styles.historyDateRow}>
+                            <HistoryIcon size={12} color={C10_ACCENT} />
+                            <Text style={styles.historyDateText}>{dateStr}</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.historyScoreBadge}>
+                          <Text style={styles.historyScoreNumber}>{item.health_score}</Text>
+                          <Text style={styles.historyScoreSub}>/10</Text>
+                        </View>
+                      </View>
+
+                      {/* Middle Row: Calories & Macro chips */}
+                      <View style={styles.historyStatsRow}>
+                        <View style={styles.historyCalChip}>
+                          <FlameIcon size={14} color={C10_ACCENT} />
+                          <Text style={styles.historyCalNumber}>{item.calories}</Text>
+                          <Text style={styles.historyCalLabel}>KCAL</Text>
+                        </View>
+
+                        <View style={styles.historyMacroPills}>
+                          <Text style={[styles.macroPill, { color: C10_DARK }]}>
+                            P: {item.protein}g
+                          </Text>
+                          <Text style={[styles.macroPill, { color: C10_ACCENT }]}>
+                            C: {item.carbs}g
+                          </Text>
+                          <Text style={[styles.macroPill, { color: C10_DARK }]}>
+                            F: {item.fat}g
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Bottom Row: Roast comment */}
+                      <View style={styles.historyRoastBubble}>
+                        <Text
+                          style={styles.historyRoastText}
+                          numberOfLines={isExpanded ? undefined : 2}
+                        >
+                          "{item.roast_comment}"
+                        </Text>
+                        <View style={styles.historyExpandHintRow}>
+                          <Text style={styles.historyExpandHint}>
+                            {isExpanded ? 'แตะเพื่อย่อ' : 'แตะเพื่ออ่านเต็ม'}
+                          </Text>
+                          <ChevronIcon
+                            size={10}
+                            color={C10_ACCENT}
+                            direction={isExpanded ? 'up' : 'down'}
+                          />
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
+          </View>
+        )}
+
+        {/* TAB 3: SETTINGS & MODEL AI */}
+        {activeTab === 'settings' && (
+          <View style={styles.tabContentWrapper}>
+            <View style={styles.settingsHeader}>
+              <Text style={styles.sectionHeading}>ตั้งค่า AI & โมเดลประมวลผล</Text>
+              <Text style={styles.sectionSubHeading}>
+                กำหนดค่า Gemini API Key และจัดการระบบสำรองฉุกเฉิน
+              </Text>
+            </View>
+
+            {/* API Key Configuration Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardHeader}>
+                <View style={styles.settingsCardTitleRow}>
+                  <KeyIcon size={16} color={C10_DARK} />
+                  <Text style={styles.settingsCardTitle}>Gemini API Key</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.showKeyToggleBtn}
+                  onPress={() => setShowApiKeyText(!showApiKeyText)}
+                  activeOpacity={0.7}
+                >
+                  <EyeIcon size={15} color={C10_DARK} closed={!showApiKeyText} />
+                  <Text style={styles.showKeyToggleText}>
+                    {showApiKeyText ? 'ซ่อน' : 'แสดง'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TextInput
+                style={styles.settingsInput}
+                value={geminiApiKey}
+                onChangeText={setGeminiApiKey}
+                placeholder="ระบุ Gemini API Key (AIzaSy...)"
+                placeholderTextColor={C10_ACCENT}
+                secureTextEntry={!showApiKeyText}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.settingsInputHint}>
+                รับ API Key ฟรีได้ที่ Google AI Studio (ai.google.dev)
+              </Text>
+            </View>
+
+            {/* Model Selection Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardTitleRow}>
+                <CpuIcon size={16} color={C10_DARK} />
+                <Text style={styles.settingsCardTitle}>โมเดล AI ที่ต้องการใช้งาน</Text>
+              </View>
+              <Text style={styles.settingsCardSub}>
+                เลือกโมเดลสำหรับการตรวจจับรูปภาพอาหารและสร้างคำบ่น Roast
+              </Text>
+
+              <View style={styles.modelOptionsContainer}>
+                {/* Model 1: 3.8 Flash */}
+                <TouchableOpacity
+                  style={[
+                    styles.modelOptionCard,
+                    currentModel === 'gemini-3.8-flash' && styles.modelOptionCardActive,
+                  ]}
+                  onPress={() => {
+                    setCurrentModel('gemini-3.8-flash');
+                    setSwitchedToLowerModel(false);
+                    showToast('สลับใช้โมเดลหลัก: gemini-3.8-flash', 'info');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.modelOptionTop}>
+                    <View style={styles.modelIndicatorPill}>
+                      <Text style={styles.modelIndicatorText}>MAIN</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelOptionName}>Gemini 3.8 Flash</Text>
+                      <Text style={styles.modelOptionTagPrimary}>โมเดลหลัก (แนะนำ)</Text>
+                    </View>
+                    {currentModel === 'gemini-3.8-flash' && (
+                      <View style={styles.activeCheckCircle}>
+                        <CheckIcon size={12} color={C50} />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.modelOptionDesc}>
+                    วิเคราะห์วัตถุดิบแม่นยำ ละเอียด และเขียนประโยค Roast สไตล์เทรนเนอร์ได้แสบที่สุด
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Model 2: 3.6 Flash */}
+                <TouchableOpacity
+                  style={[
+                    styles.modelOptionCard,
+                    currentModel === 'gemini-3.6-flash' && styles.modelOptionCardActive,
+                  ]}
+                  onPress={() => {
+                    setCurrentModel('gemini-3.6-flash');
+                    setSwitchedToLowerModel(true);
+                    showToast('สลับใช้โมเดลสำรอง: gemini-3.6-flash', 'info');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.modelOptionTop}>
+                    <View style={styles.modelIndicatorPill}>
+                      <Text style={styles.modelIndicatorText}>FAST</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelOptionName}>Gemini 3.6 Flash</Text>
+                      <Text style={styles.modelOptionTagSecondary}>โมเดลสำรอง (Traffic Fast)</Text>
+                    </View>
+                    {currentModel === 'gemini-3.6-flash' && (
+                      <View style={styles.activeCheckCircle}>
+                        <CheckIcon size={12} color={C50} />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.modelOptionDesc}>
+                    ประมวลผลฉับไว โควตาสูง สำหรับใช้งานเวลาโมเดลหลักหนาแน่น (Error 503)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Error 503 Traffic Simulator Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardTitleRow}>
+                <FlaskIcon size={16} color={C10_DARK} />
+                <Text style={styles.settingsCardTitle}>ทดสอบระบบความทนทาน (Resilience)</Text>
+              </View>
+              <Text style={styles.settingsCardSub}>
+                ทดสอบจำลองเหตุการณ์ Error 503 เพื่อตรวจดูขั้นตอนการสลับโมเดลอัตโนมัติ
+              </Text>
+
+              <TouchableOpacity
+                style={styles.simulate503Btn}
+                onPress={() => setShow503Modal(true)}
+                activeOpacity={0.75}
+              >
+                <FlaskIcon size={15} color={C10_DARK} />
+                <Text style={styles.simulate503Text}>
+                  จำลองสถานการณ์เซิร์ฟเวอร์เต็ม (Error 503 Simulator)
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Supabase Connection Status Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardTitleRow}>
+                <CloudIcon size={16} color={C10_DARK} />
+                <Text style={styles.settingsCardTitle}>Supabase Cloud Database</Text>
+              </View>
+              <View style={styles.supabaseStatusRow}>
+                <View style={styles.supabaseDotOnline} />
+                <Text style={styles.supabaseStatusText}>
+                  เชื่อมต่อตาราง meals เรียบร้อย (Auto-sync Enabled)
+                </Text>
+              </View>
+            </View>
+
+            {/* Save Button */}
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.btnPrimary, { marginTop: 8 }]}
+              onPress={() => {
+                showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success', 'ตั้งค่าสำเร็จ');
+                const dataToUse = pendingBase64 || imageBase64;
+                if (dataToUse) {
+                  showConfirmDialog({
+                    title: 'ต้องการวิเคราะห์รูปภาพทันที?',
+                    message:
+                      'คุณมีรูปภาพอาหารค้างอยู่ ต้องการส่งให้ Gemini วิเคราะห์ด้วยการตั้งค่าใหม่นี้ทันทีหรือไม่?',
+                    confirmText: 'วิเคราะห์ทันที',
+                    cancelText: 'ภายหลัง',
+                    onConfirm: () => {
+                      setActiveTab('scan');
+                      analyzeMealWithGemini(dataToUse, currentModel);
+                    },
+                  });
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <SaveIcon size={18} color={C50} />
+              <Text style={styles.btnPrimaryText}>บันทึกการตั้งค่า</Text>
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
 
-      {/* Gemini API Key Configuration Modal */}
-      <Modal
-        visible={showKeyModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowKeyModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🔑 ตั้งค่า Gemini API & โมเดล</Text>
-            <Text style={styles.modalSubtitle}>
-              ระบุ API Key และเลือกโมเดล AI สำหรับประมวลผลรูปภาพอาหาร
-            </Text>
-
-            <Text style={styles.inputLabel}>Gemini API Key</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={geminiApiKey}
-              onChangeText={setGeminiApiKey}
-              placeholder="AIzaSy..."
-              placeholderTextColor="#666"
-              autoCapitalize="none"
-              autoCorrect={false}
+      {/* BOTTOM SEGMENTED TAB BAR */}
+      <View style={styles.bottomNavContainer}>
+        <View
+          style={[styles.bottomNavBar, { maxWidth: contentWidth }]}
+          onLayout={(e) => {
+            const w = e.nativeEvent.layout.width;
+            if (w > 0 && Math.abs(w - navBarWidth) > 1) {
+              setNavBarWidth(w);
+            }
+          }}
+        >
+          {/* Animated Sliding Capsule Pill */}
+          {computedTabWidth > 0 && (
+            <Animated.View
+              style={[
+                styles.navSlidingPill,
+                {
+                  width: computedTabWidth,
+                  transform: [
+                    {
+                      translateX: tabAnimValue.interpolate({
+                        inputRange: [0, 1, 2],
+                        outputRange: [0, computedTabWidth, computedTabWidth * 2],
+                      }),
+                    },
+                  ],
+                },
+              ]}
             />
+          )}
 
-            <Text style={styles.inputLabel}>โมเดลที่ต้องการใช้งาน</Text>
-            <View style={styles.modelSelectorRow}>
-              <TouchableOpacity
-                style={[
-                  styles.modelSelectBtn,
-                  currentModel === 'gemini-3.8-flash' && styles.modelSelectBtnActive,
-                ]}
-                onPress={() => {
-                  setCurrentModel('gemini-3.8-flash');
-                  setSwitchedToLowerModel(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.modelSelectBtnText,
-                    currentModel === 'gemini-3.8-flash' && styles.modelSelectBtnTextActive,
-                  ]}
-                >
-                  ⚡ 3.8 Flash (โมเดลหลัก)
-                </Text>
-              </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.navTabItem}
+            onPress={() => setActiveTab('scan')}
+            activeOpacity={0.7}
+          >
+            <CameraIcon size={18} color={activeTab === 'scan' ? C10_DARK : C10_ACCENT} />
+            <Text style={[styles.navTabText, activeTab === 'scan' && styles.navTabTextActive]}>
+              สแกนอาหาร
+            </Text>
+          </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[
-                  styles.modelSelectBtn,
-                  currentModel === 'gemini-3.6-flash' && styles.modelSelectBtnActive,
-                ]}
-                onPress={() => {
-                  setCurrentModel('gemini-3.6-flash');
-                  setSwitchedToLowerModel(true);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.modelSelectBtnText,
-                    currentModel === 'gemini-3.6-flash' && styles.modelSelectBtnTextActive,
-                  ]}
-                >
-                  🚀 3.6 Flash (โมเดลต่ำกว่า/สำรอง)
-                </Text>
-              </TouchableOpacity>
-            </View>
+          <TouchableOpacity
+            style={styles.navTabItem}
+            onPress={() => setActiveTab('history')}
+            activeOpacity={0.7}
+          >
+            <HistoryIcon size={18} color={activeTab === 'history' ? C10_DARK : C10_ACCENT} />
+            <Text style={[styles.navTabText, activeTab === 'history' && styles.navTabTextActive]}>
+              ประวัติ ({recentMeals.length})
+            </Text>
+          </TouchableOpacity>
 
-            {/* Test Simulation Button */}
-            <TouchableOpacity
-              style={styles.testSimulateBtn}
-              onPress={() => {
-                setShowKeyModal(false);
-                setTimeout(() => {
-                  setShow503Modal(true);
-                }, 200);
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.testSimulateBtnText}>
-                🧪 จำลองสถานการณ์ Error 503 (ทดสอบปุ่มถามสลับโมเดล)
+          <TouchableOpacity
+            style={styles.navTabItem}
+            onPress={() => setActiveTab('settings')}
+            activeOpacity={0.7}
+          >
+            <SettingsIcon size={18} color={activeTab === 'settings' ? C10_DARK : C10_ACCENT} />
+            <Text style={[styles.navTabText, activeTab === 'settings' && styles.navTabTextActive]}>
+              ตั้งค่า AI
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* IN-APP FLOATING TOAST NOTIFICATION */}
+      {toast && (
+        <Animated.View
+          style={[
+            styles.toastContainer,
+            {
+              opacity: toastFadeAnim,
+              transform: [
+                {
+                  translateY: toastFadeAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-20, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <TouchableOpacity
+            style={styles.toastBubble}
+            onPress={() => setToast(null)}
+            activeOpacity={0.9}
+          >
+            <View style={styles.toastStatusTag}>
+              {toast.type === 'success' && <CheckIcon size={13} color={C50} />}
+              {toast.type === 'error' && <CloseIcon size={13} color={C50} />}
+              {toast.type === 'warning' && <AlertIcon size={13} color={C50} />}
+              {toast.type === 'info' && <InfoIcon size={13} color={C50} />}
+              <Text style={styles.toastStatusTagText}>
+                {toast.type === 'error'
+                  ? 'ERR'
+                  : toast.type === 'warning'
+                  ? 'WARN'
+                  : toast.type === 'success'
+                  ? 'OK'
+                  : 'INFO'}
               </Text>
-            </TouchableOpacity>
+            </View>
+            <View style={{ flex: 1 }}>
+              {toast.title && <Text style={styles.toastTitle}>{toast.title}</Text>}
+              <Text style={styles.toastMessage}>{toast.message}</Text>
+            </View>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
-                onPress={() => {
-                  setShowKeyModal(false);
-                  Alert.alert('บันทึกแล้ว', 'ตั้งค่า API Key และโมเดลเรียบร้อย');
-                  const dataToUse = pendingBase64 || imageBase64;
-                  if (dataToUse) {
-                    Alert.alert(
-                      'ต้องการวิเคราะห์รูปภาพทันที?',
-                      'คุณมีรูปภาพค้างอยู่ ต้องการส่งให้ Gemini วิเคราะห์ด้วยการตั้งค่าใหม่นี้ทันทีหรือไม่?',
-                      [
-                        { text: 'ภายหลัง', style: 'cancel' },
-                        {
-                          text: 'วิเคราะห์ทันที',
-                          onPress: () => analyzeMealWithGemini(dataToUse, currentModel),
-                        },
-                      ]
-                    );
-                  }
-                }}
-              >
-                <Text style={styles.btnPrimaryText}>บันทึก</Text>
-              </TouchableOpacity>
+      {/* CUSTOM THEMED CONFIRMATION / ALERT DIALOG */}
+      {customDialog && (
+        <Modal
+          visible={customDialog.visible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setCustomDialog(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.customDialogContent, { maxWidth: contentWidth }]}>
+              <View style={styles.dialogIconCircle}>
+                <AlertIcon size={24} color={C10_DARK} />
+              </View>
+              <Text style={styles.dialogTitle}>{customDialog.title}</Text>
+              <Text style={styles.dialogMessage}>{customDialog.message}</Text>
+
+              <View style={styles.dialogActionRow}>
+                {customDialog.cancelText && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.btnSecondary, { flex: 1, marginRight: 8 }]}
+                    onPress={() => {
+                      if (customDialog.onCancel) customDialog.onCancel();
+                      setCustomDialog(null);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <CloseIcon size={14} color={C10_DARK} />
+                    <Text style={styles.btnSecondaryText}>{customDialog.cancelText}</Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.btnPrimary, { flex: 1 }]}
+                  onPress={() => {
+                    customDialog.onConfirm();
+                    setCustomDialog(null);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <CheckIcon size={14} color={C50} />
+                  <Text style={styles.btnPrimaryText}>
+                    {customDialog.confirmText || 'ตกลง'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
 
-      {/* 503 High Traffic Resolution Modal */}
+      {/* 503 HIGH TRAFFIC RESOLUTION MODAL */}
       <Modal
         visible={show503Modal}
         transparent
@@ -666,17 +1308,22 @@ export default function App() {
         onRequestClose={() => setShow503Modal(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modal503Content}>
+          <View style={[styles.modal503Content, { maxWidth: contentWidth }]}>
             <View style={styles.modal503IconRow}>
-              <Text style={styles.modal503Emoji}>🚦</Text>
+              <View style={styles.modal503BadgePill}>
+                <AlertIcon size={14} color={C50} />
+                <Text style={styles.modal503BadgePillText}>TRAFFIC 503</Text>
+              </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.modal503Title}>เซิร์ฟเวอร์หนาแน่น (Error 503)</Text>
-                <Text style={styles.modal503Badge}>Traffic เต็มชั่วคราว / High Demand</Text>
+                <Text style={styles.modal503Badge}>High Demand / Capacity Reached</Text>
               </View>
             </View>
 
             <Text style={styles.modal503Text}>
-              ขณะนี้โมเดลหลัก (<Text style={{ color: '#FAFAFA', fontWeight: '700' }}>{currentModel}</Text>) มีผู้ใช้งานพร้อมกันจำนวนมากจนคิวประมวลผลเต็ม (Error 503) คุณต้องการดำเนินการอย่างไร?
+              ขณะนี้โมเดลหลัก (
+              <Text style={{ color: C10_DARK, fontWeight: '700' }}>{currentModel}</Text>
+              ) มีผู้ใช้งานพร้อมกันจำนวนมากจนคิวประมวลผลเต็ม คุณต้องการดำเนินการอย่างไร?
             </Text>
 
             <View style={styles.modal503Options}>
@@ -687,15 +1334,18 @@ export default function App() {
                 activeOpacity={0.8}
               >
                 <View style={styles.optionHeader}>
-                  <Text style={styles.optionIcon}>⚡</Text>
+                  <Text style={styles.optionTag}>OPTION 1</Text>
                   <Text style={styles.optionTitle}>เปลี่ยนไปใช้โมเดลที่ต่ำกว่า</Text>
                 </View>
                 <Text style={styles.optionDesc}>
-                  สลับไปใช้ <Text style={{ color: '#FBBF24', fontWeight: '700' }}>Gemini 3.6 Flash</Text> (โมเดลรุ่นรอง ประมวลผลไว รองรับ Traffic ได้สูงกว่า)
+                  สลับไปใช้{' '}
+                  <Text style={{ color: C10_DARK, fontWeight: '700' }}>Gemini 3.6 Flash</Text>{' '}
+                  (โมเดลรุ่นรอง ประมวลผลไว รองรับ Traffic ได้สูงกว่า)
                 </Text>
                 <View style={styles.optionBadgeNotice}>
+                  <InfoIcon size={12} color={C10_DARK} />
                   <Text style={styles.optionBadgeNoticeText}>
-                    📢 จะระบุชื่อโมเดลนี้ในผลการวิเคราะห์ให้ทราบ
+                    ระบบจะระบุชื่อโมเดลนี้ในผลการวิเคราะห์ให้ทราบ
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -707,7 +1357,7 @@ export default function App() {
                 activeOpacity={0.8}
               >
                 <View style={styles.optionHeader}>
-                  <Text style={styles.optionIcon}>🔑</Text>
+                  <Text style={styles.optionTagSecondary}>OPTION 2</Text>
                   <Text style={styles.optionTitle}>เปลี่ยนไปใช้ API Key อื่น</Text>
                 </View>
                 <Text style={styles.optionDesc}>
@@ -721,7 +1371,8 @@ export default function App() {
               onPress={() => setShow503Modal(false)}
               activeOpacity={0.7}
             >
-              <Text style={styles.cancelBtnText}>✕ ยกเลิก</Text>
+              <CloseIcon size={14} color={C10_ACCENT} />
+              <Text style={styles.cancelBtnText}>ยกเลิก</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -733,209 +1384,521 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#121214',
-  },
-  container: {
-    padding: 16,
-    paddingBottom: 40,
+    backgroundColor: C50,
   },
   header: {
+    width: '100%',
+    alignSelf: 'center',
+    flexDirection: 'column',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1.5,
+    borderBottomColor: C10_ACCENT,
+    backgroundColor: C50,
+  },
+  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 20,
-    paddingVertical: 8,
+    width: '100%',
+  },
+  headerBottomRow: {
+    width: '100%',
+    marginTop: 4,
   },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  logoIcon: {
-    fontSize: 32,
+    flexShrink: 1,
     marginRight: 10,
   },
-  title: {
-    fontSize: 22,
+  logoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: C30,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    marginRight: 10,
+    gap: 4,
+  },
+  logoBadgeText: {
+    color: C10_DARK,
     fontWeight: '900',
-    color: '#F4F4F5',
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: C10_DARK,
     letterSpacing: 0.5,
   },
   subtitle: {
-    fontSize: 12,
-    color: '#A1A1AA',
-    marginTop: 2,
+    fontSize: 11,
+    color: C10_ACCENT,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
-  keyBtn: {
-    backgroundColor: '#27272A',
+  headerStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C30,
     paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
+    paddingHorizontal: 10,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    flexShrink: 0,
   },
-  keyBtnText: {
-    color: '#E4E4E7',
-    fontSize: 12,
-    fontWeight: '600',
+  headerStatusIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
   },
-  imageCard: {
-    backgroundColor: '#18181B',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#27272A',
-    overflow: 'hidden',
-    marginBottom: 16,
+  headerStatusText: {
+    color: C10_DARK,
+    fontSize: 11,
+    fontWeight: '800',
   },
-  placeholderBox: {
-    padding: 28,
+  container: {
+    width: '100%',
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 100,
+    backgroundColor: C50,
+  },
+  tabContentWrapper: {
+    width: '100%',
+  },
+
+  /* Hero Drop Zone - Athletic Stadium Frame */
+  heroDropZone: {
+    backgroundColor: C30,
+    borderRadius: 32,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: C10_ACCENT,
+    padding: 24,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  placeholderEmoji: {
-    fontSize: 48,
-    marginBottom: 12,
-  },
-  placeholderTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FAFAFA',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  placeholderSub: {
-    fontSize: 13,
-    color: '#A1A1AA',
-    textAlign: 'center',
     marginBottom: 20,
   },
-  pickerActions: {
-    flexDirection: 'row',
-    width: '100%',
+  scannerGraphicBox: {
+    width: 90,
+    height: 70,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    backgroundColor: C50,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    gap: 4,
   },
+  scannerCornerTopLeft: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    width: 14,
+    height: 14,
+    borderTopWidth: 2.5,
+    borderLeftWidth: 2.5,
+    borderColor: C10_DARK,
+  },
+  scannerCornerTopRight: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 14,
+    height: 14,
+    borderTopWidth: 2.5,
+    borderRightWidth: 2.5,
+    borderColor: C10_DARK,
+  },
+  scannerCornerBottomLeft: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    width: 14,
+    height: 14,
+    borderBottomWidth: 2.5,
+    borderLeftWidth: 2.5,
+    borderColor: C10_DARK,
+  },
+  scannerCornerBottomRight: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 14,
+    height: 14,
+    borderBottomWidth: 2.5,
+    borderRightWidth: 2.5,
+    borderColor: C10_DARK,
+  },
+  scannerGraphicText: {
+    color: C10_DARK,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  heroTitle: {
+    fontSize: 19,
+    fontWeight: '900',
+    color: C10_DARK,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  heroSubtitle: {
+    fontSize: 13,
+    color: C10_DARK,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 22,
+    paddingHorizontal: 12,
+  },
+  heroShutterBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: C10_DARK,
+    paddingVertical: 16,
+    borderRadius: 999,
+    marginBottom: 12,
+    gap: 8,
+    borderBottomWidth: 4,
+    borderBottomColor: C10_ACCENT,
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  heroShutterText: {
+    color: C50,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  heroGalleryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 20,
+    borderTopLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    borderTopRightRadius: 6,
+    borderBottomLeftRadius: 6,
+    backgroundColor: C50,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    gap: 6,
+  },
+  heroGalleryText: {
+    color: C10_DARK,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+
+  /* Image Preview */
   previewContainer: {
     width: '100%',
+    backgroundColor: C30,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+    overflow: 'hidden',
+    marginBottom: 20,
   },
   previewImage: {
     width: '100%',
-    height: 240,
-    backgroundColor: '#09090B',
+    backgroundColor: C50,
   },
   actionBtnRow: {
     flexDirection: 'row',
     padding: 12,
-    gap: 8,
+    gap: 10,
+    backgroundColor: C30,
   },
-  btn: {
-    paddingVertical: 12,
-    borderRadius: 10,
+  actionBtn: {
+    flexDirection: 'row',
+    paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
   },
   btnPrimary: {
-    backgroundColor: '#FF5722',
+    backgroundColor: C10_DARK,
     flex: 1,
+    borderRadius: 999,
+    borderBottomWidth: 3,
+    borderBottomColor: C10_ACCENT,
   },
   btnPrimaryText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
+    color: C50,
+    fontWeight: '900',
     fontSize: 14,
   },
   btnSecondary: {
-    backgroundColor: '#27272A',
+    backgroundColor: C50,
     flex: 1,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
+    borderTopLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    borderTopRightRadius: 6,
+    borderBottomLeftRadius: 6,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
   },
   btnSecondaryText: {
-    color: '#F4F4F5',
-    fontWeight: '600',
+    color: C10_DARK,
+    fontWeight: '800',
     fontSize: 14,
   },
+
+  /* Loading State */
   loadingCard: {
-    backgroundColor: '#18181B',
-    borderRadius: 12,
+    backgroundColor: C30,
+    borderRadius: 20,
     padding: 24,
     alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
+    marginBottom: 20,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
   },
-  loadingText: {
-    color: '#F4F4F5',
-    marginTop: 12,
-    fontSize: 14,
-    fontWeight: '600',
+  loadingSpinnerWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  loadingStepTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: C10_DARK,
+    marginBottom: 6,
+  },
+  loadingStepSub: {
+    color: C10_DARK,
+    fontSize: 13,
     textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 14,
+    fontWeight: '600',
   },
-  resultCard: {
-    backgroundColor: '#18181B',
-    borderRadius: 16,
+  stepDotsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  stepDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: C50,
     borderWidth: 1,
-    borderColor: '#27272A',
-    padding: 16,
-    marginBottom: 16,
+    borderColor: C10_ACCENT,
   },
+  stepDotActive: {
+    backgroundColor: C10_DARK,
+    width: 20,
+  },
+
+  /* Result Hero Card - Asymmetric Athletic Container */
+  resultCard: {
+    backgroundColor: C30,
+    borderTopLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    borderTopRightRadius: 12,
+    borderBottomLeftRadius: 12,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+    padding: 18,
+    marginBottom: 20,
+  },
+  modelInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1.5,
+    backgroundColor: C50,
+    borderColor: C10_ACCENT,
+  },
+  modelInfoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: C10_DARK,
+    marginRight: 10,
+    gap: 4,
+  },
+  modelInfoBadgeText: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: C50,
+  },
+  modelInfoLabel: {
+    fontSize: 11,
+    color: C10_ACCENT,
+    fontWeight: '700',
+  },
+  modelInfoValue: {
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: 2,
+    color: C10_DARK,
+  },
+
+  /* Dish Title & Health Score */
   resultHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     marginBottom: 16,
   },
-  dishBadge: {
-    color: '#A1A1AA',
-    fontSize: 12,
-    fontWeight: '600',
+  dishBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     marginBottom: 4,
   },
-  dishName: {
-    color: '#FFFFFF',
-    fontSize: 20,
+  dishBadge: {
+    color: C10_DARK,
+    fontSize: 11,
     fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
-  scoreBadge: {
-    borderWidth: 2,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    alignItems: 'center',
-    backgroundColor: '#121214',
-  },
-  scoreNumber: {
+  dishName: {
+    color: C10_DARK,
     fontSize: 22,
     fontWeight: '900',
   },
-  scoreMax: {
-    fontSize: 10,
-    color: '#A1A1AA',
+
+  /* Health Score Circular Medal */
+  scoreBadge: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    borderWidth: 2.5,
+    borderColor: C10_DARK,
+    backgroundColor: C50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
+  scoreNumber: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: C10_DARK,
+    lineHeight: 26,
+  },
+  scoreMax: {
+    fontSize: 9,
+    color: C10_ACCENT,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+
+  /* Calories Stadium Banner */
   caloriesBanner: {
-    backgroundColor: '#27272A',
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: C50,
+    borderRadius: 999,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+  },
+  caloriesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 4,
   },
   caloriesLabel: {
-    color: '#A1A1AA',
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 4,
+    color: C10_ACCENT,
+    fontSize: 11,
+    fontWeight: '700',
   },
   caloriesRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
   },
   caloriesValue: {
-    color: '#FF7043',
-    fontSize: 34,
+    color: C10_DARK,
+    fontSize: 40,
     fontWeight: '900',
     marginRight: 6,
   },
   caloriesUnit: {
-    color: '#FAFAFA',
-    fontSize: 14,
-    fontWeight: '700',
+    color: C10_ACCENT,
+    fontSize: 15,
+    fontWeight: '900',
   },
+
+  /* Dynamic Macro Ratio Bar */
+  macroRatioSection: {
+    marginBottom: 14,
+    backgroundColor: C50,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+  },
+  macroRatioHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  macroRatioTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: C10_DARK,
+  },
+  macroRatioTotal: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C10_ACCENT,
+  },
+  macroRatioBarContainer: {
+    height: 12,
+    borderRadius: 6,
+    flexDirection: 'row',
+    overflow: 'hidden',
+    backgroundColor: C50,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+    marginBottom: 8,
+  },
+  macroRatioSegment: {
+    height: '100%',
+  },
+  macroRatioPercentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  macroRatioPercentText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+
+  /* Macro Nutrients Asymmetric Cards */
   macrosContainer: {
     flexDirection: 'row',
     gap: 8,
@@ -943,31 +1906,39 @@ const styles = StyleSheet.create({
   },
   macroItem: {
     flex: 1,
-    backgroundColor: '#121214',
+    backgroundColor: C50,
     padding: 10,
-    borderRadius: 10,
+    borderTopLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    borderTopRightRadius: 6,
+    borderBottomLeftRadius: 6,
     borderLeftWidth: 4,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+  },
+  macroTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 3,
   },
   macroTitle: {
-    fontSize: 11,
-    color: '#A1A1AA',
-    marginBottom: 4,
-  },
-  macroValue: {
-    fontSize: 16,
+    fontSize: 10,
+    color: C10_ACCENT,
     fontWeight: '800',
   },
-  unitText: {
-    fontSize: 12,
-    fontWeight: 'normal',
-    color: '#71717A',
+  macroValue: {
+    fontSize: 15,
+    fontWeight: '900',
   },
-  roastBubble: {
-    backgroundColor: '#2A1810',
-    borderColor: '#78350F',
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
+  unitText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C10_ACCENT,
+  },
+
+  /* Trainer Roast Speech Bubble with Pointer */
+  roastSection: {
     marginBottom: 14,
   },
   roastHeader: {
@@ -975,271 +1946,673 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
-  roastIcon: {
-    fontSize: 16,
-    marginRight: 6,
-  },
-  roastAuthor: {
-    color: '#FB923C',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  roastComment: {
-    color: '#FED7AA',
-    fontSize: 15,
-    lineHeight: 22,
-    fontStyle: 'italic',
-  },
-  syncRow: {
-    alignItems: 'center',
-    paddingTop: 4,
-  },
-  syncSyncing: {
-    color: '#A1A1AA',
-    fontSize: 12,
-  },
-  syncSuccess: {
-    color: '#10B981',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  syncError: {
-    color: '#EF4444',
-    fontSize: 12,
-  },
-  historySection: {
-    backgroundColor: '#18181B',
+  roastAvatarBadge: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#27272A',
-    padding: 16,
-    marginBottom: 20,
-  },
-  historyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  historyTitle: {
-    color: '#FAFAFA',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  historyToggle: {
-    color: '#A1A1AA',
-    fontSize: 12,
-  },
-  historyList: {
-    marginTop: 12,
-    gap: 10,
-  },
-  historyItem: {
-    backgroundColor: '#121214',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  historyTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  historyDish: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-    flex: 1,
-  },
-  historyScore: {
-    fontSize: 14,
-    fontWeight: '800',
-    marginLeft: 8,
-  },
-  historyCal: {
-    color: '#A1A1AA',
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  historyRoast: {
-    color: '#D4D4D8',
-    fontSize: 12,
-    fontStyle: 'italic',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: '#18181B',
-    borderRadius: 16,
-    padding: 20,
-    width: '100%',
-    maxWidth: 400,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FAFAFA',
-    marginBottom: 8,
-  },
-  modalSubtitle: {
-    fontSize: 13,
-    color: '#A1A1AA',
-    marginBottom: 16,
-    lineHeight: 18,
-  },
-  modalInput: {
-    backgroundColor: '#121214',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
-    color: '#FAFAFA',
-    padding: 12,
-    fontSize: 14,
-    marginBottom: 16,
-  },
-  modalActions: {
-    flexDirection: 'row',
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#D4D4D8',
-    marginBottom: 6,
-  },
-  modelSelectorRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  modelSelectBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
-    backgroundColor: '#121214',
+    backgroundColor: C10_DARK,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  modelSelectBtnActive: {
-    borderColor: '#FF5722',
-    backgroundColor: '#FF572220',
-  },
-  modelSelectBtnText: {
-    fontSize: 12,
-    color: '#A1A1AA',
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  modelSelectBtnTextActive: {
-    color: '#FF7043',
-    fontWeight: '700',
-  },
-  testSimulateBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#F59E0B60',
-    backgroundColor: '#78350F25',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  testSimulateBtnText: {
-    color: '#FBBF24',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  modelInfoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-  },
-  modelInfoCardNormal: {
-    backgroundColor: '#064E3B20',
-    borderColor: '#065F46',
-  },
-  modelInfoCardFallback: {
-    backgroundColor: '#78350F25',
-    borderColor: '#D97706',
-  },
-  modelInfoEmoji: {
-    fontSize: 22,
     marginRight: 10,
   },
-  modelInfoLabel: {
-    fontSize: 11,
-    color: '#A1A1AA',
+  roastAvatarText: {
+    color: C50,
+    fontWeight: '900',
+    fontSize: 10,
+    letterSpacing: 0.5,
+  },
+  roastAuthor: {
+    color: C10_DARK,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  roastAuthorSub: {
+    color: C10_ACCENT,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  roastBubble: {
+    backgroundColor: C50,
+    borderColor: C10_DARK,
+    borderWidth: 2,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 20,
+    padding: 16,
+    position: 'relative',
+  },
+  speechBubblePointer: {
+    position: 'absolute',
+    top: -8,
+    left: 14,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: C10_DARK,
+  },
+  roastComment: {
+    color: C10_DARK,
+    fontSize: 15,
+    lineHeight: 23,
+    fontStyle: 'italic',
     fontWeight: '600',
   },
-  modelInfoValue: {
-    fontSize: 13,
+
+  /* Supabase Sync Indicator */
+  syncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 6,
+    gap: 6,
+  },
+  syncSyncing: {
+    color: C10_ACCENT,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  syncSuccess: {
+    color: C10_DARK,
+    fontSize: 12,
     fontWeight: '800',
+  },
+  syncError: {
+    color: C10_ACCENT,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  /* History Tab Styles */
+  historyHeaderBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  sectionHeading: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: C10_DARK,
+  },
+  sectionSubHeading: {
+    fontSize: 12,
+    color: C10_ACCENT,
+    marginTop: 2,
+    fontWeight: '700',
+  },
+  refreshIconBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C30,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    gap: 6,
+  },
+  refreshIconText: {
+    color: C10_DARK,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  emptyHistoryBox: {
+    backgroundColor: C30,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+    padding: 32,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  emptyGraphicCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: C10_DARK,
+    backgroundColor: C50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  emptyHistoryTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: C10_DARK,
+    marginBottom: 6,
+  },
+  emptyHistorySub: {
+    fontSize: 13,
+    color: C10_DARK,
+    textAlign: 'center',
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  historyList: {
+    gap: 12,
+  },
+  historyCard: {
+    backgroundColor: C30,
+    borderTopLeftRadius: 20,
+    borderBottomRightRadius: 20,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 8,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    padding: 14,
+  },
+  historyCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  historyDishTitle: {
+    color: C10_DARK,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  historyDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     marginTop: 2,
   },
+  historyDateText: {
+    fontSize: 11,
+    color: C10_ACCENT,
+    fontWeight: '700',
+  },
+  historyScoreBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 2,
+    borderColor: C10_DARK,
+    backgroundColor: C50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyScoreNumber: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: C10_DARK,
+    lineHeight: 18,
+  },
+  historyScoreSub: {
+    fontSize: 8,
+    color: C10_ACCENT,
+    fontWeight: '900',
+  },
+  historyStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    backgroundColor: C50,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+  },
+  historyCalChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: C30,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  historyCalNumber: {
+    color: C10_DARK,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  historyCalLabel: {
+    color: C10_ACCENT,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  historyMacroPills: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  macroPill: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  historyRoastBubble: {
+    backgroundColor: C50,
+    borderLeftWidth: 3.5,
+    borderLeftColor: C10_DARK,
+    padding: 10,
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 14,
+    borderBottomRightRadius: 14,
+    borderBottomLeftRadius: 14,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+  },
+  historyRoastText: {
+    color: C10_DARK,
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: 'italic',
+    fontWeight: '600',
+  },
+  historyExpandHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: 4,
+  },
+  historyExpandHint: {
+    color: C10_ACCENT,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+
+  /* Settings Tab Styles - Asymmetric & Pill Controls */
+  settingsHeader: {
+    marginBottom: 16,
+  },
+  settingsCard: {
+    backgroundColor: C30,
+    borderTopLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 8,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    padding: 16,
+    marginBottom: 16,
+  },
+  settingsCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  settingsCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  settingsCardTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: C10_DARK,
+  },
+  settingsCardSub: {
+    fontSize: 12,
+    color: C10_DARK,
+    lineHeight: 17,
+    marginBottom: 12,
+    fontWeight: '600',
+  },
+  showKeyToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  showKeyToggleText: {
+    color: C10_DARK,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  settingsInput: {
+    backgroundColor: C50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    color: C10_DARK,
+    padding: 12,
+    fontSize: 14,
+    marginBottom: 6,
+    fontWeight: '700',
+  },
+  settingsInputHint: {
+    fontSize: 11,
+    color: C10_DARK,
+    fontWeight: '600',
+  },
+  modelOptionsContainer: {
+    gap: 10,
+  },
+  modelOptionCard: {
+    backgroundColor: C50,
+    borderTopLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    borderTopRightRadius: 6,
+    borderBottomLeftRadius: 6,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    padding: 12,
+  },
+  modelOptionCardActive: {
+    borderColor: C10_DARK,
+    borderWidth: 2.5,
+  },
+  modelOptionTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  modelIndicatorPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: C30,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+    marginRight: 10,
+  },
+  modelIndicatorText: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: C10_DARK,
+  },
+  modelOptionName: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: C10_DARK,
+  },
+  modelOptionTagPrimary: {
+    fontSize: 10,
+    color: C10_ACCENT,
+    fontWeight: '800',
+  },
+  modelOptionTagSecondary: {
+    fontSize: 10,
+    color: C10_ACCENT,
+    fontWeight: '800',
+  },
+  activeCheckCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: C10_DARK,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modelOptionDesc: {
+    fontSize: 12,
+    color: C10_DARK,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  simulate503Btn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: C50,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    borderRadius: 999,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 8,
+  },
+  simulate503Text: {
+    color: C10_DARK,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  supabaseStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  supabaseDotOnline: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: C10_DARK,
+    marginRight: 8,
+  },
+  supabaseStatusText: {
+    color: C10_DARK,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  /* Floating Stadium Bottom Navigation Bar */
+  bottomNavContainer: {
+    position: 'absolute',
+    bottom: 12,
+    left: 14,
+    right: 14,
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  bottomNavBar: {
+    width: '100%',
+    maxWidth: 500,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    backgroundColor: C30,
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+    position: 'relative',
+  },
+  navSlidingPill: {
+    position: 'absolute',
+    top: 6,
+    bottom: 6,
+    left: 8,
+    borderRadius: 999,
+    backgroundColor: C50,
+    borderWidth: 1.5,
+    borderColor: C10_DARK,
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  navTabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 999,
+    gap: 3,
+    zIndex: 2,
+    backgroundColor: 'transparent',
+  },
+  navTabText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C10_ACCENT,
+  },
+  navTabTextActive: {
+    color: C10_DARK,
+    fontWeight: '900',
+  },
+
+  /* In-App Floating Toast */
+  toastContainer: {
+    position: 'absolute',
+    top: 60,
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  toastBubble: {
+    width: '100%',
+    maxWidth: 520,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C30,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 2,
+    borderColor: C10_DARK,
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  toastStatusTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: C10_DARK,
+    marginRight: 10,
+    gap: 4,
+  },
+  toastStatusTagText: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: C50,
+  },
+  toastTitle: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: C10_DARK,
+    marginBottom: 2,
+  },
+  toastMessage: {
+    fontSize: 12,
+    color: C10_DARK,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+
+  /* Custom Themed Dialog */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(77, 42, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  customDialogContent: {
+    width: '100%',
+    backgroundColor: C50,
+    borderRadius: 22,
+    padding: 22,
+    borderWidth: 2,
+    borderColor: C10_ACCENT,
+    alignItems: 'center',
+  },
+  dialogIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: C30,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  dialogTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: C10_DARK,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  dialogMessage: {
+    fontSize: 13,
+    color: C10_DARK,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 20,
+    fontWeight: '600',
+  },
+  dialogActionRow: {
+    width: '100%',
+    flexDirection: 'row',
+  },
+
+  /* 503 High Traffic Resolution Modal */
   modal503Content: {
-    backgroundColor: '#18181B',
-    borderRadius: 20,
+    backgroundColor: C50,
+    borderRadius: 22,
     padding: 22,
     width: '100%',
-    maxWidth: 420,
-    borderWidth: 1.5,
-    borderColor: '#F59E0B',
+    borderWidth: 2.5,
+    borderColor: C10_ACCENT,
   },
   modal503IconRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
   },
-  modal503Emoji: {
-    fontSize: 34,
-    marginRight: 12,
+  modal503BadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: C10_DARK,
+    marginRight: 10,
+    gap: 4,
+  },
+  modal503BadgePillText: {
+    color: C50,
+    fontWeight: '900',
+    fontSize: 11,
   },
   modal503Title: {
     fontSize: 18,
-    fontWeight: '800',
-    color: '#FEF3C7',
+    fontWeight: '900',
+    color: C10_DARK,
   },
   modal503Badge: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#F59E0B',
+    fontWeight: '800',
+    color: C10_ACCENT,
     marginTop: 2,
   },
   modal503Text: {
     fontSize: 13,
-    color: '#D4D4D8',
+    color: C10_DARK,
     lineHeight: 20,
     marginBottom: 16,
+    fontWeight: '600',
   },
   modal503Options: {
     gap: 12,
     marginBottom: 16,
   },
   optionBtnPrimary: {
-    backgroundColor: '#27272A',
-    borderWidth: 1.5,
-    borderColor: '#F59E0B',
+    backgroundColor: C30,
+    borderWidth: 2,
+    borderColor: C10_DARK,
     borderRadius: 14,
     padding: 14,
   },
   optionBtnSecondary: {
-    backgroundColor: '#27272A',
-    borderWidth: 1,
-    borderColor: '#52525B',
+    backgroundColor: C50,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
     borderRadius: 14,
     padding: 14,
   },
@@ -1248,41 +2621,65 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
-  optionIcon: {
-    fontSize: 18,
+  optionTag: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: C50,
+    backgroundColor: C10_DARK,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  optionTagSecondary: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: C10_DARK,
+    backgroundColor: C30,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     marginRight: 8,
   },
   optionTitle: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#FAFAFA',
+    fontWeight: '900',
+    color: C10_DARK,
   },
   optionDesc: {
     fontSize: 12,
-    color: '#A1A1AA',
+    color: C10_DARK,
     lineHeight: 18,
+    fontWeight: '600',
   },
   optionBadgeNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginTop: 8,
-    backgroundColor: '#451A03',
+    backgroundColor: C50,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderRadius: 6,
     alignSelf: 'flex-start',
+    gap: 4,
   },
   optionBadgeNoticeText: {
     fontSize: 11,
-    color: '#FDE68A',
-    fontWeight: '600',
+    color: C10_DARK,
+    fontWeight: '800',
   },
   cancelBtn: {
-    paddingVertical: 10,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 10,
+    gap: 4,
   },
   cancelBtnText: {
-    color: '#A1A1AA',
+    color: C10_ACCENT,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '800',
   },
 });
