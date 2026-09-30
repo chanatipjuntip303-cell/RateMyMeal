@@ -1,4 +1,4 @@
-# 🥗 Rate My Meal
+# Rate My Meal
 
 <div align="center">
 
@@ -9,48 +9,33 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-1.5%20Flash-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://aistudio.google.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Database-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 **Snap your meal, calculate macros with Gemini AI vision, and get roasted by a brutal yet caring fitness trainer.**
 
-[Key Features](#-key-features) • [Tech Stack](#-tech-stack) • [Quick Start](#-quick-start) • [Database Setup](#-supabase-database-setup) • [EAS Build](#-build-standalone-apk-eas) • [License](#-license)
+[Key Features](#key-features) • [Tech Stack](#tech-stack) • [Quick Start](#quick-start) • [Database Setup](#supabase-database-setup) • [EAS Build](#build-standalone-apk-eas) • [Author](#author)
 
 </div>
 
 ---
 
-## 📱 App Preview
+## Key Features
 
-<div align="center">
-
-| 📸 Scan & AI Roast | 📊 Macro Nutrition | 🕒 Meal History |
-| :---: | :---: | :---: |
-| <img src="docs/screenshots/scanner.png" width="240" alt="Scanner Screen" onerror="this.src='https://placehold.co/240x480/18181B/FAFAFA?text=Scan+%26+Roast+UI';"/> | <img src="docs/screenshots/nutrition.png" width="240" alt="Nutrition Screen" onerror="this.src='https://placehold.co/240x480/18181B/FAFAFA?text=Macro+Breakdown';"/> | <img src="docs/screenshots/history.png" width="240" alt="History Screen" onerror="this.src='https://placehold.co/240x480/18181B/FAFAFA?text=History+Log+UI';"/> |
-
-*(Screenshots can be added to `docs/screenshots/`)*
-
-</div>
-
----
-
-## ✨ Key Features
-
-- **📸 Multimodal AI Vision Analysis:** Capture directly with your camera or select from your gallery. Images are automatically optimized and analyzed using Google Gemini Vision.
-- **⚡ Macro & Micronutrient Breakdown:** Accurately estimates:
+- **Multimodal AI Vision Analysis:** Capture directly with your camera or select from your gallery. Images are automatically optimized and analyzed using Google Gemini Vision.
+- **Macro & Micronutrient Breakdown:** Accurately estimates:
   - Total Calories (kcal)
   - Protein (g)
   - Carbohydrates (g)
   - Fat (g)
   - Health Score (1 to 10)
-- **🥊 Brutal Fitness Trainer "Roast":** Get candid, hilarious, and motivational feedback on your dietary choices delivered in the persona of an uncompromising fitness coach.
-- **☁️ Real-time Cloud Sync (Supabase):** Automatically stores every scanned meal into PostgreSQL via Supabase with instant offline resilience.
-- **📜 Interactive Meal History:** Easily look back at previously logged meals, nutritional trends, scores, and past roasts.
-- **🛡️ 503 Traffic Surge Fallback System:** Gracefully detects and handles API traffic spikes with automatic model switching or fallback simulation to guarantee a smooth user experience.
-- **🎨 Modern Dark Mode & Micro-animations:** Styled with an ultra-clean dark aesthetic, custom vector icons, spring animations, and tabbed navigation.
+- **Fitness Trainer Roast:** Get candid, humorous, and motivational feedback on your dietary choices delivered in the persona of an uncompromising fitness coach.
+- **Real-time Cloud Sync (Supabase):** Automatically stores every scanned meal into PostgreSQL via Supabase with instant offline resilience.
+- **Interactive Meal History:** Easily look back at previously logged meals, nutritional trends, scores, and past roasts.
+- **Traffic Surge Fallback System:** Gracefully detects and handles API traffic spikes with automatic model switching or fallback simulation to guarantee a smooth user experience.
+- **Modern Dark Mode & Micro-animations:** Styled with a clean dark aesthetic, custom vector icons, spring animations, and tabbed navigation.
 
 ---
 
-## 🛠 Tech Stack
+## Tech Stack
 
 | Layer | Technology | Description |
 | :--- | :--- | :--- |
@@ -62,7 +47,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Prerequisites
 - **Node.js** (v18 or higher recommended)
@@ -107,7 +92,7 @@ Scan the QR code with **Expo Go** (Android) or the **Camera app** (iOS).
 
 ---
 
-## 🗄️ Supabase Database Setup
+## Supabase Database Setup
 
 To enable meal logging and historical syncing, create a new project in [Supabase](https://supabase.com) and execute this SQL query in the **SQL Editor**:
 
@@ -140,7 +125,7 @@ CREATE POLICY "Allow public insert access"
 
 ---
 
-## 📦 Build Standalone APK (EAS)
+## Build Standalone APK (EAS)
 
 This project is pre-configured with `eas.json` for direct Android `.apk` generation.
 
@@ -160,7 +145,7 @@ Once completed, EAS will provide a direct download link to install the `.apk` on
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 RateMyMeal/
@@ -178,14 +163,6 @@ RateMyMeal/
 
 ---
 
-## 📄 License
-
-Distributed under the **MIT License**. See `LICENSE` for more information.
-
----
-
-## 👤 Author
+## Author
 
 Developed by **[@chanatipjuntip303-cell](https://github.com/chanatipjuntip303-cell)**
-
-⭐️ *If you found this project helpful or fun, give it a star on GitHub!*
