@@ -25,7 +25,6 @@ import {
   SettingsIcon,
   FlameIcon,
   RefreshIcon,
-  SwapIcon,
   PlateIcon,
   ProteinIcon,
   CarbsIcon,
@@ -552,25 +551,35 @@ export default function App() {
                 />
                 <View style={styles.actionBtnRow}>
                   <TouchableOpacity
+                    style={[styles.actionBtn, styles.btnCameraAction]}
+                    onPress={() => pickImage(true)}
+                    disabled={loading}
+                    activeOpacity={0.8}
+                  >
+                    <CameraIcon size={15} color={C50} />
+                    <Text style={styles.btnCameraActionText}>ถ่ายใหม่</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
                     style={[styles.actionBtn, styles.btnSecondary]}
                     onPress={() => pickImage(false)}
                     disabled={loading}
                     activeOpacity={0.8}
                   >
-                    <SwapIcon size={16} color={C10_DARK} />
-                    <Text style={styles.btnSecondaryText}>เปลี่ยนรูป</Text>
+                    <GalleryIcon size={15} color={C10_DARK} />
+                    <Text style={styles.btnSecondaryText}>คลังภาพ</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.actionBtn, styles.btnPrimary]}
+                    style={[styles.actionBtn, styles.btnSecondary]}
                     onPress={() => {
                       if (imageBase64) analyzeMealWithGemini(imageBase64, currentModel);
                     }}
                     disabled={loading}
                     activeOpacity={0.8}
                   >
-                    <RefreshIcon size={16} color={C50} />
-                    <Text style={styles.btnPrimaryText}>สแกนซ้ำ</Text>
+                    <RefreshIcon size={15} color={C10_DARK} />
+                    <Text style={styles.btnSecondaryText}>สแกนซ้ำ</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -823,6 +832,23 @@ export default function App() {
                     <Text style={styles.syncError}>ซิงค์ข้อมูลเข้า Supabase ไม่สำเร็จ</Text>
                   )}
                 </View>
+
+                {/* Mega CTA Button: Next Meal Scan */}
+                <TouchableOpacity
+                  style={styles.nextMealBtn}
+                  onPress={() => pickImage(true)}
+                  disabled={loading}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.nextMealBtnIconBadge}>
+                    <CameraIcon size={20} color={C50} />
+                  </View>
+                  <View style={styles.nextMealBtnContent}>
+                    <Text style={styles.nextMealBtnTitle}>ถ่ายรูปมื้อถัดไป</Text>
+                    <Text style={styles.nextMealBtnSubtitle}>เตรียมมื้อต่อไปให้เทรนเนอร์ตรวจ</Text>
+                  </View>
+                  <ChevronIcon size={16} color={C50} direction="right" />
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -1624,16 +1650,29 @@ const styles = StyleSheet.create({
   },
   actionBtnRow: {
     flexDirection: 'row',
-    padding: 12,
-    gap: 10,
+    padding: 10,
+    gap: 6,
     backgroundColor: C30,
   },
   actionBtn: {
     flexDirection: 'row',
-    paddingVertical: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
+  },
+  btnCameraAction: {
+    backgroundColor: C10_DARK,
+    flex: 1.1,
+    borderRadius: 999,
+    borderBottomWidth: 3,
+    borderBottomColor: C10_ACCENT,
+  },
+  btnCameraActionText: {
+    color: C50,
+    fontWeight: '900',
+    fontSize: 13,
   },
   btnPrimary: {
     backgroundColor: C10_DARK,
@@ -1645,13 +1684,13 @@ const styles = StyleSheet.create({
   btnPrimaryText: {
     color: C50,
     fontWeight: '900',
-    fontSize: 14,
+    fontSize: 13,
   },
   btnSecondary: {
     backgroundColor: C50,
     flex: 1,
-    borderTopLeftRadius: 18,
-    borderBottomRightRadius: 18,
+    borderTopLeftRadius: 14,
+    borderBottomRightRadius: 14,
     borderTopRightRadius: 6,
     borderBottomLeftRadius: 6,
     borderWidth: 1.5,
@@ -1660,7 +1699,50 @@ const styles = StyleSheet.create({
   btnSecondaryText: {
     color: C10_DARK,
     fontWeight: '800',
-    fontSize: 14,
+    fontSize: 13,
+  },
+  nextMealBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C10_DARK,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginTop: 18,
+    borderBottomWidth: 4,
+    borderBottomColor: C10_ACCENT,
+    shadowColor: C10_DARK,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  nextMealBtnIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: 'rgba(249, 230, 168, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(249, 230, 168, 0.3)',
+  },
+  nextMealBtnContent: {
+    flex: 1,
+  },
+  nextMealBtnTitle: {
+    color: C50,
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  nextMealBtnSubtitle: {
+    color: C50,
+    opacity: 0.8,
+    fontSize: 11,
+    fontWeight: '600',
   },
 
   /* Loading State */
