@@ -49,6 +49,29 @@ const C30 = '#F2A900';        // 30% - Cards, Surfaces & Containers
 const C10_ACCENT = '#CC6F00'; // 10% - Borders, Dividers & Accents
 const C10_DARK = '#4D2A00';   // 10% - Typography, Icons & Focal Contrast
 
+// Gemini model routing (verified Oct 2026: stable 3.x-flash = 503 overload,
+// gemini-3-flash-preview = 200 OK). Single attempt per tap — no silent retry.
+const MAIN_MODEL = 'gemini-3-flash-preview';
+const FALLBACK_MODEL = 'gemini-3.6-flash';
+const LEGACY_MODEL = 'gemini-3.8-flash';
+const GEMINI_TIMEOUT_MS = 45000;
+
+const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timeout (${Math.round(ms / 1000)}s) — network slow or server overloaded`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
+const is404Error = (err: any): boolean => {
+  if (!err) return false;
+  const status = err?.status || err?.statusCode || err?.response?.status;
+  if (status === 404) return true;
+  const msg = String(err?.message || err || '').toLowerCase();
+  return msg.includes('404') || msg.includes('not found') || msg.includes('no longer available');
+};
+
 type TabType = 'scan' | 'history' | 'settings';
 
 interface ToastState {
@@ -94,7 +117,7 @@ export default function App() {
   const [expandedRoastId, setExpandedRoastId] = useState<string | null>(null);
 
   // Model & 503 Handling States
-  const [currentModel, setCurrentModel] = useState<string>('gemini-3.8-flash');
+  const [currentModel, setCurrentModel] = useState<string>(MAIN_MODEL);
   const [resultModel, setResultModel] = useState<string | null>(null);
   const [show503Modal, setShow503Modal] = useState<boolean>(false);
   const [pendingBase64, setPendingBase64] = useState<string | null>(null);
@@ -296,7 +319,7 @@ export default function App() {
       return;
     }
 
-    const modelToUse = modelOverride || currentModel || 'gemini-3.8-flash';
+    const modelToUse = modelOverride || currentModel || MAIN_MODEL;
     setLoading(true);
     setLoadingStep(
       isFallbackAttempt
@@ -304,6 +327,9 @@ export default function App() {
         : 'เทรนเนอร์กำลังจ้องดูจานข้าวของคุณ...'
     );
     setSyncStatus('idle');
+
+    // Single-attempt log so Google console counts match taps (1 tap = 1 request).
+    console.log(`[Gemini] attempt=1 model=${modelToUse} fallback=${isFallbackAttempt}`);
 
     try {
       const genAI = new GoogleGenerativeAI(keyToUse);
@@ -335,34 +361,14 @@ export default function App() {
       };
 
       setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน...');
-      let result;
-      try {
-        result = await model.generateContent([prompt, imagePart]);
-      } catch (geminiErr: any) {
-        if (is503Error(geminiErr)) {
-          console.warn('Gemini 503 Traffic Overload encountered:', geminiErr);
-          setLoading(false);
-          setPendingBase64(base64Data);
-          setShow503Modal(true);
-          return;
-        }
-
-        if (
-          geminiErr?.message?.includes('404') ||
-          geminiErr?.message?.includes('not found') ||
-          geminiErr?.message?.includes('no longer available')
-        ) {
-          const fallbackModel = genAI.getGenerativeModel({
-            model: 'gemini-flash-latest',
-            generationConfig: {
-              responseMimeType: 'application/json',
-            },
-          });
-          result = await fallbackModel.generateContent([prompt, imagePart]);
-        } else {
-          throw geminiErr;
-        }
-      }
+      // ONE request only: timeout wrapper guarantees loading never sticks forever.
+      // No silent auto-retry here — retry only via explicit 503-modal action.
+      const result = await withTimeout(
+        model.generateContent([prompt, imagePart]),
+        GEMINI_TIMEOUT_MS,
+        `Gemini ${modelToUse}`
+      );
+      console.log(`[Gemini] success model=${modelToUse}`);
 
       const responseText = result.response.text();
       const serverModelVersion = (result.response as any)?.modelVersion;
@@ -379,7 +385,7 @@ export default function App() {
       }
 
       const isLowerFallback =
-        isFallbackAttempt || modelToUse.includes('3.6') || modelToUse.includes('8b');
+        isFallbackAttempt || modelToUse === FALLBACK_MODEL || modelToUse === LEGACY_MODEL;
       setMealData(parsed);
       setResultModel(verifiedModelName);
       setCurrentModel(modelToUse);
@@ -419,11 +425,21 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Analysis error:', err);
+      console.log(`[Gemini] failed model=${modelToUse} err=${String(err?.message || err).slice(0, 200)}`);
       if (is503Error(err)) {
-        console.warn('Gemini 503 Error caught in outer block:', err);
-        setLoading(false);
+        console.warn('Gemini 503 Error caught:', err);
         setPendingBase64(base64Data);
         setShow503Modal(true);
+        return;
+      }
+      if (is404Error(err)) {
+        setPendingBase64(base64Data);
+        showToast(
+          `โมเดล ${modelToUse} ใช้ไม่ได้ (404) — ลองสลับเป็น ${MAIN_MODEL} ในหน้า Settings`,
+          'error',
+          'โมเดลไม่พร้อมใช้งาน'
+        );
+        setSyncStatus('error');
         return;
       }
       showToast(
@@ -439,7 +455,8 @@ export default function App() {
 
   const handleSwitchToLowerModel = () => {
     setShow503Modal(false);
-    const lowerModel = 'gemini-3.6-flash';
+    // Route to the verified-working model first; only then fall back further.
+    const lowerModel = currentModel !== MAIN_MODEL ? MAIN_MODEL : FALLBACK_MODEL;
     setCurrentModel(lowerModel);
     setSwitchedToLowerModel(true);
     const dataToUse = pendingBase64 || imageBase64;
@@ -507,9 +524,7 @@ export default function App() {
             />
             <Text style={styles.headerStatusText}>
               {geminiApiKey
-                ? switchedToLowerModel
-                  ? '3.6 Flash'
-                  : '3.8 Flash'
+                ? currentModel.replace('gemini-', '').replace('-flash', ' Flash')
                 : 'ตั้งค่า Key'}
             </Text>
           </TouchableOpacity>
@@ -663,8 +678,8 @@ export default function App() {
                       <CpuIcon size={13} color={C50} />
                       <Text style={styles.modelInfoBadgeText}>
                         {switchedToLowerModel ||
-                        resultModel.includes('3.6') ||
-                        resultModel.includes('8b')
+                        resultModel.includes(FALLBACK_MODEL) ||
+                        resultModel.includes(LEGACY_MODEL)
                           ? 'FALLBACK'
                           : 'AI'}
                       </Text>
@@ -672,8 +687,8 @@ export default function App() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.modelInfoLabel}>
                         {switchedToLowerModel ||
-                        resultModel.includes('3.6') ||
-                        resultModel.includes('8b')
+                        resultModel.includes(FALLBACK_MODEL) ||
+                        resultModel.includes(LEGACY_MODEL)
                           ? 'Traffic Fallback (รุ่นสำรองประมวลผลไว):'
                           : 'ผลลัพธ์นี้วิเคราะห์โดย AI โมเดล:'}
                       </Text>
@@ -1033,16 +1048,16 @@ export default function App() {
               </Text>
 
               <View style={styles.modelOptionsContainer}>
-                {/* Model 1: 3.8 Flash */}
+                {/* Model 1: 3-flash-preview (verified working Oct 2026) */}
                 <TouchableOpacity
                   style={[
                     styles.modelOptionCard,
-                    currentModel === 'gemini-3.8-flash' && styles.modelOptionCardActive,
+                    currentModel === MAIN_MODEL && styles.modelOptionCardActive,
                   ]}
                   onPress={() => {
-                    setCurrentModel('gemini-3.8-flash');
+                    setCurrentModel(MAIN_MODEL);
                     setSwitchedToLowerModel(false);
-                    showToast('สลับใช้โมเดลหลัก: gemini-3.8-flash', 'info');
+                    showToast(`สลับใช้โมเดลหลัก: ${MAIN_MODEL}`, 'info');
                   }}
                   activeOpacity={0.8}
                 >
@@ -1051,30 +1066,62 @@ export default function App() {
                       <Text style={styles.modelIndicatorText}>MAIN</Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.modelOptionName}>Gemini 3.8 Flash</Text>
-                      <Text style={styles.modelOptionTagPrimary}>โมเดลหลัก (แนะนำ)</Text>
+                      <Text style={styles.modelOptionName}>Gemini 3 Flash Preview</Text>
+                      <Text style={styles.modelOptionTagPrimary}>โมเดลหลัก (แนะนำ — ใช้งานได้จริง)</Text>
                     </View>
-                    {currentModel === 'gemini-3.8-flash' && (
+                    {currentModel === MAIN_MODEL && (
                       <View style={styles.activeCheckCircle}>
                         <CheckIcon size={12} color={C50} />
                       </View>
                     )}
                   </View>
                   <Text style={styles.modelOptionDesc}>
-                    วิเคราะห์วัตถุดิบแม่นยำ ละเอียด และเขียนประโยค Roast สไตล์เทรนเนอร์ได้แสบที่สุด
+                    โมเดลหลักที่ทดสอบแล้วว่าตอบสนองปกติช่วงที่รุ่น stable 503 overload
                   </Text>
                 </TouchableOpacity>
 
-                {/* Model 2: 3.6 Flash */}
+                {/* Model 2: 3.8 Flash (legacy, currently 503) */}
                 <TouchableOpacity
                   style={[
                     styles.modelOptionCard,
-                    currentModel === 'gemini-3.6-flash' && styles.modelOptionCardActive,
+                    currentModel === LEGACY_MODEL && styles.modelOptionCardActive,
                   ]}
                   onPress={() => {
-                    setCurrentModel('gemini-3.6-flash');
+                    setCurrentModel(LEGACY_MODEL);
                     setSwitchedToLowerModel(true);
-                    showToast('สลับใช้โมเดลสำรอง: gemini-3.6-flash', 'info');
+                    showToast(`สลับใช้โมเดล: ${LEGACY_MODEL} (อาจติด 503)`, 'info');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.modelOptionTop}>
+                    <View style={styles.modelIndicatorPill}>
+                      <Text style={styles.modelIndicatorText}>LEGACY</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelOptionName}>Gemini 3.8 Flash</Text>
+                      <Text style={styles.modelOptionTagSecondary}>โมเดลเดิม (ช่วงนี้ 503 บ่อย)</Text>
+                    </View>
+                    {currentModel === LEGACY_MODEL && (
+                      <View style={styles.activeCheckCircle}>
+                        <CheckIcon size={12} color={C50} />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.modelOptionDesc}>
+                    วิเคราะห์ละเอียด แต่ช่วง Oct 2026 เซิร์ฟเวอร์มักตอบ 503 high demand
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Model 3: 3.6 Flash */}
+                <TouchableOpacity
+                  style={[
+                    styles.modelOptionCard,
+                    currentModel === FALLBACK_MODEL && styles.modelOptionCardActive,
+                  ]}
+                  onPress={() => {
+                    setCurrentModel(FALLBACK_MODEL);
+                    setSwitchedToLowerModel(true);
+                    showToast(`สลับใช้โมเดลสำรอง: ${FALLBACK_MODEL}`, 'info');
                   }}
                   activeOpacity={0.8}
                 >
@@ -1086,7 +1133,7 @@ export default function App() {
                       <Text style={styles.modelOptionName}>Gemini 3.6 Flash</Text>
                       <Text style={styles.modelOptionTagSecondary}>โมเดลสำรอง (Traffic Fast)</Text>
                     </View>
-                    {currentModel === 'gemini-3.6-flash' && (
+                    {currentModel === FALLBACK_MODEL && (
                       <View style={styles.activeCheckCircle}>
                         <CheckIcon size={12} color={C50} />
                       </View>
@@ -1365,8 +1412,8 @@ export default function App() {
                 </View>
                 <Text style={styles.optionDesc}>
                   สลับไปใช้{' '}
-                  <Text style={{ color: C10_DARK, fontWeight: '700' }}>Gemini 3.6 Flash</Text>{' '}
-                  (โมเดลรุ่นรอง ประมวลผลไว รองรับ Traffic ได้สูงกว่า)
+                  <Text style={{ color: C10_DARK, fontWeight: '700' }}>{currentModel !== MAIN_MODEL ? MAIN_MODEL : FALLBACK_MODEL}</Text>{' '}
+                  (โมเดลที่ทดสอบแล้วว่าตอบสนองปกติ — 1 แตะ = 1 request ไม่ยิงซ้ำ)
                 </Text>
                 <View style={styles.optionBadgeNotice}>
                   <InfoIcon size={12} color={C10_DARK} />
