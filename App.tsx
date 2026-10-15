@@ -54,15 +54,51 @@ const C10_DARK = '#4D2A00';   // 10% - Typography, Icons & Focal Contrast
 const MAIN_MODEL = 'gemini-3-flash-preview';
 const FALLBACK_MODEL = 'gemini-3.6-flash';
 const LEGACY_MODEL = 'gemini-3.8-flash';
-const GEMINI_TIMEOUT_MS = 45000;
+const GEMINI_TIMEOUT_MS = 120000;
+const PING_TIMEOUT_MS = 30000;
 
-const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timeout (${Math.round(ms / 1000)}s) — network slow or server overloaded`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+// Groq alternative (OpenAI-compatible chat completions + vision).
+// Only vision-capable model per Groq docs: qwen/qwen3.8-27b (JSON mode, base64 data URL).
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'qwen/qwen3.8-27b';
+const GROQ_TIMEOUT_MS = 120000;
+
+type AIProvider = 'gemini' | 'groq';
+
+const isAbortError = (err: any): boolean => {
+  const name = String(err?.name || '');
+  const msg = String(err?.message || err || '').toLowerCase();
+  return name === 'AbortError' || msg.includes('aborted') || msg.includes('abort');
 };
+
+// Abortable timeout: the timer actually cancels the underlying request,
+// so timed-out uploads don't pile up in the background and clog the uplink.
+const runWithAbort = async <T,>(
+  ms: number,
+  label: string,
+  fn: (signal: AbortSignal) => Promise<T>
+): Promise<{ value: T; elapsedMs: number }> => {
+  const ctrl = new AbortController();
+  const t0 = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const value = await fn(ctrl.signal);
+    return { value, elapsedMs: Date.now() - t0 };
+  } catch (err: any) {
+    if (ctrl.signal.aborted || isAbortError(err)) {
+      throw new Error(`${label} timeout (${Math.round(ms / 1000)}s, aborted) — server queued or upload stalled, no background retry left running`);
+    }
+    (err as any).elapsedMs = Date.now() - t0;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const elapsedOf = (err: any): string =>
+  typeof err?.elapsedMs === 'number' ? ` after ${(err.elapsedMs / 1000).toFixed(1)}s` : '';
+
+const imgKB = (b64: string): string => `${Math.round((b64.length * 3) / 4 / 1024)}KB`;
 
 const is404Error = (err: any): boolean => {
   if (!err) return false;
@@ -70,6 +106,21 @@ const is404Error = (err: any): boolean => {
   if (status === 404) return true;
   const msg = String(err?.message || err || '').toLowerCase();
   return msg.includes('404') || msg.includes('not found') || msg.includes('no longer available');
+};
+
+const isRateLimitError = (err: any): boolean => {
+  if (!err) return false;
+  const status = err?.status || err?.statusCode || err?.response?.status;
+  if (status === 429) return true;
+  const msg = String(err?.message || err || '').toLowerCase();
+  return msg.includes('429') || msg.includes('rate limit') || msg.includes('quota') || msg.includes('too many requests');
+};
+
+const stripJsonFences = (raw: string): string => {
+  const t = raw.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();
+  const s = t.indexOf('{');
+  const e = t.lastIndexOf('}');
+  return s >= 0 && e > s ? t.slice(s, e + 1) : t;
 };
 
 type TabType = 'scan' | 'history' | 'settings';
@@ -112,6 +163,11 @@ export default function App() {
   const [geminiApiKey, setGeminiApiKey] = useState<string>(
     process.env.EXPO_PUBLIC_GEMINI_API_KEY || ''
   );
+  const [groqApiKey, setGroqApiKey] = useState<string>(
+    process.env.EXPO_PUBLIC_GROQ_API_KEY || ''
+  );
+  const [aiProvider, setAiProvider] = useState<AIProvider>('gemini');
+  const [groqModel] = useState<string>(GROQ_MODEL);
   const [recentMeals, setRecentMeals] = useState<Meal[]>([]);
   const [refreshingHistory, setRefreshingHistory] = useState<boolean>(false);
   const [expandedRoastId, setExpandedRoastId] = useState<string | null>(null);
@@ -125,6 +181,9 @@ export default function App() {
 
   // Settings UI State
   const [showApiKeyText, setShowApiKeyText] = useState<boolean>(false);
+  const [showGroqKeyText, setShowGroqKeyText] = useState<boolean>(false);
+  const [pinging, setPinging] = useState<boolean>(false);
+  const [lastPing, setLastPing] = useState<string | null>(null);
 
   // Custom Toast & Dialog States
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -274,7 +333,7 @@ export default function App() {
         mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [4, 3],
-        quality: 0.6,
+        quality: 0.4,
         base64: true,
       };
 
@@ -293,7 +352,7 @@ export default function App() {
         setSyncStatus('idle');
 
         if (selectedAsset.base64) {
-          analyzeMealWithGemini(selectedAsset.base64, currentModel);
+          analyzeMeal(selectedAsset.base64, currentModel);
         }
       }
     } catch (err) {
@@ -329,7 +388,7 @@ export default function App() {
     setSyncStatus('idle');
 
     // Single-attempt log so Google console counts match taps (1 tap = 1 request).
-    console.log(`[Gemini] attempt=1 model=${modelToUse} fallback=${isFallbackAttempt}`);
+    console.log(`[Gemini] attempt=1 model=${modelToUse} img=${imgKB(base64Data)} fallback=${isFallbackAttempt}`);
 
     try {
       const genAI = new GoogleGenerativeAI(keyToUse);
@@ -361,14 +420,15 @@ export default function App() {
       };
 
       setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน...');
-      // ONE request only: timeout wrapper guarantees loading never sticks forever.
+      // ONE request only: abortable timeout cancels the upload on expiry,
+      // so timed-out attempts don't pile up in the background.
       // No silent auto-retry here — retry only via explicit 503-modal action.
-      const result = await withTimeout(
-        model.generateContent([prompt, imagePart]),
+      const { value: result, elapsedMs } = await runWithAbort(
         GEMINI_TIMEOUT_MS,
-        `Gemini ${modelToUse}`
+        `Gemini ${modelToUse}`,
+        (signal) => model.generateContent([prompt, imagePart], { signal })
       );
-      console.log(`[Gemini] success model=${modelToUse}`);
+      console.log(`[Gemini] success model=${modelToUse} img=${imgKB(base64Data)} in=${(elapsedMs / 1000).toFixed(1)}s`);
 
       const responseText = result.response.text();
       const serverModelVersion = (result.response as any)?.modelVersion;
@@ -425,7 +485,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Analysis error:', err);
-      console.log(`[Gemini] failed model=${modelToUse} err=${String(err?.message || err).slice(0, 200)}`);
+      console.log(`[Gemini] failed model=${modelToUse} img=${imgKB(base64Data)}${elapsedOf(err)} err=${String(err?.message || err).slice(0, 200)}`);
       if (is503Error(err)) {
         console.warn('Gemini 503 Error caught:', err);
         setPendingBase64(base64Data);
@@ -453,10 +513,263 @@ export default function App() {
     }
   };
 
+  const analyzeMealWithGroq = async (base64Data: string) => {
+    const keyToUse = groqApiKey.trim();
+    if (!keyToUse) {
+      showConfirmDialog({
+        title: 'ต้องระบุ Groq API Key',
+        message: 'กรุณากรอก Groq API Key (ฟรีที่ console.groq.com/keys) เพื่อใช้โมเดลสำรอง',
+        confirmText: 'ไปหน้าตั้งค่า',
+        cancelText: 'ยกเลิก',
+        onConfirm: () => setActiveTab('settings'),
+      });
+      return;
+    }
+
+    setLoading(true);
+    setLoadingStep('กำลังส่งรูปให้ Groq วิเคราะห์ (โมเดลสำรอง)...');
+    setSyncStatus('idle');
+    console.log(`[Groq] attempt=1 model=${groqModel} img=${imgKB(base64Data)}`);
+
+    try {
+      const prompt = `วิเคราะห์อาหารในภาพนี้อย่างแม่นยำ คำนวณแคลอรี่และสารอาหารหลัก (กรัม) พร้อมเขียนคอมเมนต์ Roast แสบๆ สไตล์เทรนเนอร์สายฟิตเนสปากร้ายแต่หวังดี ตอบกลับเป็น JSON เท่านั้นตามนี้: {"dish_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "health_score": number (1-10), "roast_comment": string (ภาษาไทย)}`;
+
+      setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน...');
+      const { value: res, elapsedMs } = await runWithAbort(
+        GROQ_TIMEOUT_MS,
+        `Groq ${groqModel}`,
+        (signal) =>
+          fetch(GROQ_ENDPOINT, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${keyToUse}`,
+            },
+            body: JSON.stringify({
+              model: groqModel,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: prompt },
+                    {
+                      type: 'image_url',
+                      image_url: { url: `data:image/jpeg;base64,${base64Data}` },
+                    },
+                  ],
+                },
+              ],
+              temperature: 0.3,
+              max_completion_tokens: 1024,
+              response_format: { type: 'json_object' },
+            }),
+            signal,
+          })
+      );
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        const err: any = new Error(`Groq ${res.status} — ${body.slice(0, 200) || res.statusText}`);
+        err.status = res.status;
+        throw err;
+      }
+
+      const json = await res.json();
+      const content: string = json?.choices?.[0]?.message?.content || '';
+      if (!content) throw new Error('Groq ตอบกลับว่างเปล่า กรุณาลองใหม่');
+      console.log(`[Groq] success model=${groqModel} img=${imgKB(base64Data)} in=${(elapsedMs / 1000).toFixed(1)}s`);
+
+      let parsed: Meal;
+      try {
+        parsed = JSON.parse(stripJsonFences(content));
+      } catch (parseError) {
+        console.error('Groq JSON Parse Error:', parseError, content);
+        throw new Error('รูปแบบข้อมูล Groq ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+      }
+
+      setMealData(parsed);
+      setResultModel(`groq/${groqModel}`);
+      setSwitchedToLowerModel(true);
+      showToast(`วิเคราะห์ ${parsed.dish_name} สำเร็จด้วย Groq!`, 'success', 'วิเคราะห์เสร็จสิ้น');
+
+      setSyncStatus('syncing');
+      const { error: dbError } = await supabase.from('meals').insert([
+        {
+          dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
+          calories: Math.round(Number(parsed.calories) || 0),
+          protein: parseFloat(String(parsed.protein || 0)),
+          carbs: parseFloat(String(parsed.carbs || 0)),
+          fat: parseFloat(String(parsed.fat || 0)),
+          health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
+          roast_comment: parsed.roast_comment || '',
+        },
+      ]);
+
+      if (dbError) {
+        console.warn('Supabase insert warning:', dbError.message);
+        setSyncStatus('error');
+        showToast('ไม่สามารถบันทึกประวัติลง Supabase ได้', 'warning', 'Sync Issue');
+      } else {
+        setSyncStatus('synced');
+        fetchRecentMeals();
+      }
+    } catch (err: any) {
+      console.error('Groq analysis error:', err);
+      console.log(`[Groq] failed model=${groqModel} img=${imgKB(base64Data)}${elapsedOf(err)} err=${String(err?.message || err).slice(0, 200)}`);
+      if (err?.status === 401) {
+        showToast('Groq API Key ไม่ถูกต้อง กรุณาตรวจสอบในหน้า Settings', 'error', 'Groq 401');
+      } else if (isRateLimitError(err) || is503Error(err)) {
+        setPendingBase64(base64Data);
+        setShow503Modal(true);
+        showToast('Groq ติด rate limit/503 — ลองสลับกลับ Gemini หรือรอซักครู่', 'warning', 'Groq Busy');
+      } else {
+        showToast(err.message || 'Groq วิเคราะห์ไม่สำเร็จ', 'error', 'วิเคราะห์ไม่สำเร็จ');
+      }
+      setSyncStatus('error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Router: 1 tap = 1 request on the selected provider. No cross-provider auto-retry.
+  const analyzeMeal = async (base64Data: string, modelOverride?: string, isFallback = false) => {
+    if (aiProvider === 'groq') {
+      await analyzeMealWithGroq(base64Data);
+    } else {
+      await analyzeMealWithGemini(base64Data, modelOverride, isFallback);
+    }
+  };
+
+  // Text-only ping: isolates phone->API network path from image-upload issues.
+  // Tiny payload (~50 bytes) — if this succeeds but image analysis times out,
+  // the problem is payload size/upload, not the network being "slow".
+  const pingProvider = async () => {
+    if (pinging) return;
+    setPinging(true);
+    try {
+      if (aiProvider === 'groq') {
+        const key = groqApiKey.trim();
+        if (!key) {
+          showToast('กรอก Groq API Key ก่อนปิง', 'warning', 'ต้องระบุ Key');
+          return;
+        }
+        const { elapsedMs } = await runWithAbort(
+          PING_TIMEOUT_MS,
+          'Groq ping',
+          (signal) =>
+            fetch(GROQ_ENDPOINT, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+              body: JSON.stringify({
+                model: groqModel,
+                messages: [{ role: 'user', content: 'reply with {"ok":1}' }],
+                max_completion_tokens: 16,
+              }),
+              signal,
+            }).then(async (r) => {
+              if (!r.ok) {
+                const e: any = new Error(`Groq ping ${r.status}`);
+                e.status = r.status;
+                throw e;
+              }
+              return r;
+            })
+        );
+        const msg = `Groq ping OK in ${(elapsedMs / 1000).toFixed(1)}s — network fine, suspect image upload/size`;
+        console.log(`[Ping] groq ok in=${(elapsedMs / 1000).toFixed(1)}s`);
+        setLastPing(msg);
+        showToast(msg, 'success', 'Ping สำเร็จ');
+      } else {
+        const key = geminiApiKey.trim();
+        if (!key) {
+          showToast('กรอก Gemini API Key ก่อนปิง', 'warning', 'ต้องระบุ Key');
+          return;
+        }
+        const genAI = new GoogleGenerativeAI(key);
+        const model = genAI.getGenerativeModel({ model: currentModel });
+        const { elapsedMs } = await runWithAbort(
+          PING_TIMEOUT_MS,
+          `Gemini ${currentModel} ping`,
+          (signal) => model.generateContent('reply with {"ok":1}', { signal }).then((r) => r)
+        );
+        const msg = `Gemini ping OK in ${(elapsedMs / 1000).toFixed(1)}s — network fine, suspect image upload/size`;
+        console.log(`[Ping] gemini ${currentModel} ok in=${(elapsedMs / 1000).toFixed(1)}s`);
+        setLastPing(msg);
+        showToast(msg, 'success', 'Ping สำเร็จ');
+      }
+    } catch (err: any) {
+      const msg = `Ping ล้มเหลว${elapsedOf(err)}: ${String(err?.message || err).slice(0, 160)}`;
+      console.log(`[Ping] ${aiProvider} failed${elapsedOf(err)} err=${String(err?.message || err).slice(0, 160)}`);
+      setLastPing(msg);
+      showToast(msg, 'error', 'Ping ล้มเหลว — network หรือ server จริง');
+    } finally {
+      setPinging(false);
+    }
+  };
+
+  // Raw GET ping: plain fetch, no SDK, no auth, no POST body.
+  // Mirrors the PC-verified request — separates "app runtime can't reach host"
+  // from "SDK/POST/auth problem".
+  const pingRaw = async () => {
+    if (pinging) return;
+    setPinging(true);
+    try {
+      const targets = [
+        { name: 'Google', url: `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey.trim()}&pageSize=1` },
+        { name: 'Groq', url: 'https://api.groq.com/openai/v1/models' },
+        { name: 'GoogleWeb', url: 'https://www.google.com/generate_204' },
+        { name: 'Supabase', url: `${process.env.EXPO_PUBLIC_SUPABASE_URL || ''}/rest/v1/` },
+      ];
+      const lines: string[] = [];
+      for (const t of targets) {
+        try {
+          const { elapsedMs } = await runWithAbort(
+            PING_TIMEOUT_MS,
+            `${t.name} raw`,
+            (signal) => fetch(t.url, { method: 'GET', signal }).then(async (r) => {
+              await r.text().catch(() => '');
+              return r;
+            })
+          );
+          const line = `${t.name} GET OK in ${(elapsedMs / 1000).toFixed(1)}s`;
+          console.log(`[PingRaw] ${line}`);
+          lines.push(line);
+        } catch (e: any) {
+          const line = `${t.name} GET failed${elapsedOf(e)}: ${String(e?.message || e).slice(0, 120)}`;
+          console.log(`[PingRaw] ${line}`);
+          lines.push(line);
+        }
+      }
+      const msg = lines.join(' | ');
+      setLastPing(msg);
+      showToast(msg, lines.every((l) => l.includes('OK')) ? 'success' : 'error', 'Raw ping');
+    } finally {
+      setPinging(false);
+    }
+  };
+
+  const handleSwitchToGroq = () => {
+    setShow503Modal(false);
+    if (!groqApiKey.trim()) {
+      setAiProvider('groq');
+      setActiveTab('settings');
+      showToast('กรอก Groq API Key ฟรีก่อนใช้งาน (console.groq.com/keys)', 'info', 'ต้องระบุ Key');
+      return;
+    }
+    setAiProvider('groq');
+    const dataToUse = pendingBase64 || imageBase64;
+    if (dataToUse) {
+      analyzeMealWithGroq(dataToUse);
+    } else {
+      showToast(`สลับไปใช้ Groq (${GROQ_MODEL}) เรียบร้อย`, 'info', 'เปลี่ยน provider แล้ว');
+    }
+  };
+
   const handleSwitchToLowerModel = () => {
     setShow503Modal(false);
     // Route to the verified-working model first; only then fall back further.
     const lowerModel = currentModel !== MAIN_MODEL ? MAIN_MODEL : FALLBACK_MODEL;
+    setAiProvider('gemini');
     setCurrentModel(lowerModel);
     setSwitchedToLowerModel(true);
     const dataToUse = pendingBase64 || imageBase64;
@@ -523,8 +836,10 @@ export default function App() {
               ]}
             />
             <Text style={styles.headerStatusText}>
-              {geminiApiKey
-                ? currentModel.replace('gemini-', '').replace('-flash', ' Flash')
+              {geminiApiKey || groqApiKey
+                ? aiProvider === 'groq'
+                  ? 'Groq Qwen'
+                  : currentModel.replace('gemini-', '').replace('-flash', ' Flash')
                 : 'ตั้งค่า Key'}
             </Text>
           </TouchableOpacity>
@@ -588,7 +903,7 @@ export default function App() {
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.btnSecondary]}
                     onPress={() => {
-                      if (imageBase64) analyzeMealWithGemini(imageBase64, currentModel);
+                      if (imageBase64) analyzeMeal(imageBase64, currentModel);
                     }}
                     disabled={loading}
                     activeOpacity={0.8}
@@ -679,7 +994,8 @@ export default function App() {
                       <Text style={styles.modelInfoBadgeText}>
                         {switchedToLowerModel ||
                         resultModel.includes(FALLBACK_MODEL) ||
-                        resultModel.includes(LEGACY_MODEL)
+                        resultModel.includes(LEGACY_MODEL) ||
+                        resultModel.includes('groq')
                           ? 'FALLBACK'
                           : 'AI'}
                       </Text>
@@ -688,7 +1004,8 @@ export default function App() {
                       <Text style={styles.modelInfoLabel}>
                         {switchedToLowerModel ||
                         resultModel.includes(FALLBACK_MODEL) ||
-                        resultModel.includes(LEGACY_MODEL)
+                        resultModel.includes(LEGACY_MODEL) ||
+                        resultModel.includes('groq')
                           ? 'Traffic Fallback (รุ่นสำรองประมวลผลไว):'
                           : 'ผลลัพธ์นี้วิเคราะห์โดย AI โมเดล:'}
                       </Text>
@@ -1037,7 +1354,114 @@ export default function App() {
               </Text>
             </View>
 
-            {/* Model Selection Card */}
+            {/* Groq API Key Card (free alternative) */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardHeader}>
+                <View style={styles.settingsCardTitleRow}>
+                  <KeyIcon size={16} color={C10_DARK} />
+                  <Text style={styles.settingsCardTitle}>Groq API Key (สำรองฟรี)</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.showKeyToggleBtn}
+                  onPress={() => setShowGroqKeyText(!showGroqKeyText)}
+                  activeOpacity={0.7}
+                >
+                  <EyeIcon size={15} color={C10_DARK} closed={!showGroqKeyText} />
+                  <Text style={styles.showKeyToggleText}>
+                    {showGroqKeyText ? 'ซ่อน' : 'แสดง'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TextInput
+                style={styles.settingsInput}
+                value={groqApiKey}
+                onChangeText={setGroqApiKey}
+                placeholder="ระบุ Groq API Key (gsk_...)"
+                placeholderTextColor={C10_ACCENT}
+                secureTextEntry={!showGroqKeyText}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.settingsInputHint}>
+                ฟรี ไม่ต้องผูกบัตร — ขอได้ที่ console.groq.com/keys (30 req/min, 1,000 req/day)
+              </Text>
+            </View>
+
+            {/* Provider Selection Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardTitleRow}>
+                <CpuIcon size={16} color={C10_DARK} />
+                <Text style={styles.settingsCardTitle}>ผู้ให้บริการ AI (Provider)</Text>
+              </View>
+              <Text style={styles.settingsCardSub}>
+                เลือก Gemini (หลัก) หรือ Groq Qwen สำรองฟรีเมื่อ Gemini 503 overload
+              </Text>
+
+              <View style={styles.modelOptionsContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.modelOptionCard,
+                    aiProvider === 'gemini' && styles.modelOptionCardActive,
+                  ]}
+                  onPress={() => {
+                    setAiProvider('gemini');
+                    showToast(`ใช้ Gemini (${currentModel})`, 'info');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.modelOptionTop}>
+                    <View style={styles.modelIndicatorPill}>
+                      <Text style={styles.modelIndicatorText}>GEMINI</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelOptionName}>Google Gemini</Text>
+                      <Text style={styles.modelOptionTagPrimary}>หลัก — คุณภาพ Roast ดีสุด</Text>
+                    </View>
+                    {aiProvider === 'gemini' && (
+                      <View style={styles.activeCheckCircle}>
+                        <CheckIcon size={12} color={C50} />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.modelOptionDesc}>
+                    ช่วงนี้รุ่น stable อาจ 503 — ถ้าติดให้สลับไป Groq ชั่วคราว
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.modelOptionCard,
+                    aiProvider === 'groq' && styles.modelOptionCardActive,
+                  ]}
+                  onPress={() => {
+                    setAiProvider('groq');
+                    showToast(`ใช้ Groq (${GROQ_MODEL}) — เร็ว ฟรี`, 'info');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.modelOptionTop}>
+                    <View style={styles.modelIndicatorPill}>
+                      <Text style={styles.modelIndicatorText}>GROQ</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.modelOptionName}>Groq Qwen 3.8 27B</Text>
+                      <Text style={styles.modelOptionTagSecondary}>สำรองฟรี — เร็ว ไม่ 503</Text>
+                    </View>
+                    {aiProvider === 'groq' && (
+                      <View style={styles.activeCheckCircle}>
+                        <CheckIcon size={12} color={C50} />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.modelOptionDesc}>
+                    {`Vision + JSON mode ผ่าน ${GROQ_MODEL} ต้องมี Groq Key (gsk_...)`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Model Selection Card (Gemini only) */}
             <View style={styles.settingsCard}>
               <View style={styles.settingsCardTitleRow}>
                 <CpuIcon size={16} color={C10_DARK} />
@@ -1166,6 +1590,37 @@ export default function App() {
                   จำลองสถานการณ์เซิร์ฟเวอร์เต็ม (Error 503 Simulator)
                 </Text>
               </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.simulate503Btn, { marginTop: 10 }]}
+                onPress={pingProvider}
+                disabled={pinging}
+                activeOpacity={0.75}
+              >
+                <CpuIcon size={15} color={C10_DARK} />
+                <Text style={styles.simulate503Text}>
+                  {pinging
+                    ? 'กำลังปิง...'
+                    : `ปิง ${aiProvider === 'groq' ? `Groq (${GROQ_MODEL})` : `Gemini (${currentModel})`} แบบ text-only`}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.simulate503Btn, { marginTop: 10 }]}
+                onPress={pingRaw}
+                disabled={pinging}
+                activeOpacity={0.75}
+              >
+                <CloudIcon size={15} color={C10_DARK} />
+                <Text style={styles.simulate503Text}>
+                  {pinging ? 'กำลังปิง...' : 'ปิงแบบ GET ธรรมดา (ไม่ใช้ SDK)'}
+                </Text>
+              </TouchableOpacity>
+              <Text style={styles.settingsInputHint}>
+                ปิงส่งข้อความ ~50 bytes ไม่ส่งรูป — ถ้าปิงผ่านแต่สแกนรูป timeout แปลว่าเป็นที่ขนาดรูป/upload ไม่ใช่เน็ตช้า
+              </Text>
+              {lastPing && (
+                <Text style={[styles.settingsInputHint, { marginTop: 6 }]}>{lastPing}</Text>
+              )}
             </View>
 
             {/* Supabase Connection Status Card */}
@@ -1192,12 +1647,12 @@ export default function App() {
                   showConfirmDialog({
                     title: 'ต้องการวิเคราะห์รูปภาพทันที?',
                     message:
-                      'คุณมีรูปภาพอาหารค้างอยู่ ต้องการส่งให้ Gemini วิเคราะห์ด้วยการตั้งค่าใหม่นี้ทันทีหรือไม่?',
+                      'คุณมีรูปภาพอาหารค้างอยู่ ต้องการส่งให้ AI วิเคราะห์ด้วยการตั้งค่าใหม่นี้ทันทีหรือไม่?',
                     confirmText: 'วิเคราะห์ทันที',
                     cancelText: 'ภายหลัง',
                     onConfirm: () => {
                       setActiveTab('scan');
-                      analyzeMealWithGemini(dataToUse, currentModel);
+                      analyzeMeal(dataToUse, currentModel);
                     },
                   });
                 }
@@ -1394,9 +1849,7 @@ export default function App() {
             </View>
 
             <Text style={styles.modal503Text}>
-              ขณะนี้โมเดลหลัก (
-              <Text style={{ color: C10_DARK, fontWeight: '700' }}>{currentModel}</Text>
-              ) มีผู้ใช้งานพร้อมกันจำนวนมากจนคิวประมวลผลเต็ม คุณต้องการดำเนินการอย่างไร?
+              ขณะนี้ {aiProvider === 'groq' ? `Groq (${groqModel})` : `โมเดลหลัก (${currentModel})`} มีผู้ใช้งานพร้อมกันจำนวนมากจนคิวประมวลผลเต็ม คุณต้องการดำเนินการอย่างไร?
             </Text>
 
             <View style={styles.modal503Options}>
@@ -1423,14 +1876,29 @@ export default function App() {
                 </View>
               </TouchableOpacity>
 
-              {/* Option 2: Switch to another API Key */}
+              {/* Option 2: Switch to Groq free alternative */}
+              <TouchableOpacity
+                style={styles.optionBtnPrimary}
+                onPress={handleSwitchToGroq}
+                activeOpacity={0.8}
+              >
+                <View style={styles.optionHeader}>
+                  <Text style={styles.optionTag}>OPTION 2</Text>
+                  <Text style={styles.optionTitle}>สลับไปใช้ Groq (สำรองฟรี)</Text>
+                </View>
+                <Text style={styles.optionDesc}>
+                  ใช้ <Text style={{ color: C10_DARK, fontWeight: '700' }}>{GROQ_MODEL}</Text> วิเคราะห์รูปเดิมต่อทันที — เร็ว ฟรี ไม่ต้องรอ Gemini หาย overload
+                </Text>
+              </TouchableOpacity>
+
+              {/* Option 3: Switch to another API Key */}
               <TouchableOpacity
                 style={styles.optionBtnSecondary}
                 onPress={handleSwitchApiKey}
                 activeOpacity={0.8}
               >
                 <View style={styles.optionHeader}>
-                  <Text style={styles.optionTagSecondary}>OPTION 2</Text>
+                  <Text style={styles.optionTagSecondary}>OPTION 3</Text>
                   <Text style={styles.optionTitle}>เปลี่ยนไปใช้ API Key อื่น</Text>
                 </View>
                 <Text style={styles.optionDesc}>
