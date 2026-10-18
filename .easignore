@@ -1,0 +1,29 @@
+# EAS Ignore - files excluded when uploading to EAS Build
+# Note: .env is intentionally NOT listed here so EAS can package your EXPO_PUBLIC_* variables into the APK build.
+
+# dependencies
+node_modules/
+
+# Expo cache & build artifacts
+.expo/
+dist/
+web-build/
+*.tsbuildinfo
+
+# Native folders (allow EAS to run prebuild from app.json)
+/ios
+/android
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Git & Documentation
+.git/
+*.md
+design/
+*.bat
+supapass.txt

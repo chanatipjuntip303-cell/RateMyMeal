@@ -14,10 +14,20 @@ import {
   useWindowDimensions,
   Animated,
   RefreshControl,
+  Linking,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { supabase, Meal } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  Meal,
+  createSupabaseClient,
+  SUPABASE_MEALS_SQL,
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY,
+} from './supabase';
 import {
   CameraIcon,
   GalleryIcon,
@@ -184,6 +194,22 @@ export default function App() {
   const [showGroqKeyText, setShowGroqKeyText] = useState<boolean>(false);
   const [pinging, setPinging] = useState<boolean>(false);
   const [lastPing, setLastPing] = useState<string | null>(null);
+  const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
+  const LOCAL_MEALS_KEY = '@rate_my_meal_history';
+
+  // Personal Supabase Configuration States
+  const [supabaseUrl, setSupabaseUrl] = useState<string>('');
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
+  const [showSupabaseKeyText, setShowSupabaseKeyText] = useState<boolean>(false);
+  const [showSupabaseGuideModal, setShowSupabaseGuideModal] = useState<boolean>(false);
+  const [testingSupabase, setTestingSupabase] = useState<boolean>(false);
+  const [supabaseStatus, setSupabaseStatus] = useState<'not_configured' | 'connected' | 'error'>('not_configured');
+  const [supabaseClientInstance, setSupabaseClientInstance] = useState<SupabaseClient | null>(null);
+
+  const STORAGE_SUPABASE_URL_KEY = '@user_supabase_url';
+  const STORAGE_SUPABASE_KEY_KEY = '@user_supabase_anon_key';
+  const STORAGE_GEMINI_KEY = '@user_gemini_api_key';
+  const STORAGE_GROQ_KEY = '@user_groq_api_key';
 
   // Custom Toast & Dialog States
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -211,7 +237,38 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
-    fetchRecentMeals();
+    const initCredentialsAndMeals = async () => {
+      let client: SupabaseClient | null = null;
+      try {
+        // Load custom Gemini and Groq API keys if saved by user
+        const storedGemini = await AsyncStorage.getItem(STORAGE_GEMINI_KEY);
+        if (storedGemini) {
+          setGeminiApiKey(storedGemini);
+        }
+        const storedGroq = await AsyncStorage.getItem(STORAGE_GROQ_KEY);
+        if (storedGroq) {
+          setGroqApiKey(storedGroq);
+        }
+
+        const storedUrl = await AsyncStorage.getItem(STORAGE_SUPABASE_URL_KEY);
+        const storedKey = await AsyncStorage.getItem(STORAGE_SUPABASE_KEY_KEY);
+        const urlToUse = storedUrl || DEFAULT_SUPABASE_URL;
+        const keyToUse = storedKey || DEFAULT_SUPABASE_ANON_KEY;
+        if (urlToUse && keyToUse) {
+          setSupabaseUrl(urlToUse);
+          setSupabaseAnonKey(keyToUse);
+          client = createSupabaseClient(urlToUse, keyToUse);
+          if (client) {
+            setSupabaseClientInstance(client);
+            setSupabaseStatus('connected');
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load stored credentials', e);
+      }
+      fetchRecentMeals(client);
+    };
+    initCredentialsAndMeals();
   }, []);
 
   // Loading pulse animation
@@ -269,23 +326,207 @@ export default function App() {
     setCustomDialog({ ...options, visible: true });
   };
 
-  const fetchRecentMeals = async () => {
+  const fetchRecentMeals = async (clientOverride?: SupabaseClient | null) => {
     setRefreshingHistory(true);
+    const activeClient = clientOverride !== undefined ? clientOverride : supabaseClientInstance;
     try {
-      const { data, error } = await supabase
-        .from('meals')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
+      // 1. First load from local storage for instant display
+      let localList: Meal[] = [];
+      const raw = await AsyncStorage.getItem(LOCAL_MEALS_KEY);
+      if (raw) {
+        localList = JSON.parse(raw) as Meal[];
+        setRecentMeals(localList);
+      } else {
+        setRecentMeals([]);
+      }
 
-      if (!error && data) {
-        setRecentMeals(data as Meal[]);
+      // 2. If personal Supabase is connected, fetch from cloud and merge to local cache
+      if (activeClient) {
+        const { data, error } = await activeClient
+          .from('meals')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (!error && data) {
+          const cloudMeals = data as Meal[];
+          await AsyncStorage.setItem(LOCAL_MEALS_KEY, JSON.stringify(cloudMeals));
+          setRecentMeals(cloudMeals);
+          setSupabaseStatus('connected');
+        } else if (error) {
+          console.warn('Supabase fetch error:', error.message);
+        }
       }
     } catch (err) {
-      console.warn('Failed to fetch recent meals from Supabase', err);
+      console.warn('Failed to fetch meals', err);
     } finally {
       setRefreshingHistory(false);
     }
+  };
+
+  const saveMealLocally = async (newMeal: Meal) => {
+    setSyncStatus('syncing');
+    try {
+      // 1. Always save to local storage first (ensures offline access)
+      const raw = await AsyncStorage.getItem(LOCAL_MEALS_KEY);
+      const list: Meal[] = raw ? JSON.parse(raw) : [];
+      const updated = [newMeal, ...list.filter((m) => m.created_at !== newMeal.created_at).slice(0, 49)];
+      await AsyncStorage.setItem(LOCAL_MEALS_KEY, JSON.stringify(updated));
+      setRecentMeals(updated);
+
+      // 2. If personal Supabase is connected, backup to cloud
+      if (supabaseClientInstance) {
+        const { error: dbError } = await supabaseClientInstance.from('meals').insert([
+          {
+            dish_name: newMeal.dish_name || 'อาหารไม่ระบุชื่อ',
+            calories: Math.round(Number(newMeal.calories) || 0),
+            protein: parseFloat(String(newMeal.protein || 0)),
+            carbs: parseFloat(String(newMeal.carbs || 0)),
+            fat: parseFloat(String(newMeal.fat || 0)),
+            health_score: Math.min(10, Math.max(1, Math.round(Number(newMeal.health_score) || 5))),
+            roast_comment: newMeal.roast_comment || '',
+            created_at: newMeal.created_at || new Date().toISOString(),
+          },
+        ]);
+
+        if (dbError) {
+          console.warn('Supabase cloud sync warning:', dbError.message);
+          setSyncStatus('error');
+          showToast('บันทึกลงเครื่องแล้ว แต่ซิงค์ขึ้น Supabase ไม่สำเร็จ', 'warning', 'Sync Issue');
+        } else {
+          setSyncStatus('synced');
+        }
+      } else {
+        setSyncStatus('synced');
+      }
+    } catch (err) {
+      console.warn('Failed to save meal', err);
+      setSyncStatus('error');
+      showToast('ไม่สามารถบันทึกประวัติได้', 'warning', 'Storage Issue');
+    }
+  };
+
+  const testSupabaseConnection = async () => {
+    const url = supabaseUrl.trim();
+    const key = supabaseAnonKey.trim();
+    if (!url || !key) {
+      showToast('กรุณากรอก Supabase URL และ Anon Key ก่อนกดทดสอบ', 'warning', 'ต้องระบุข้อมูล');
+      return;
+    }
+    setTestingSupabase(true);
+    try {
+      const client = createSupabaseClient(url, key);
+      if (!client) {
+        throw new Error('รูปแบบ URL ไม่ถูกต้อง (เช่น https://xxxx.supabase.co)');
+      }
+
+      // Query 1 row from meals table to verify both connection AND table existence
+      const { data, error } = await client.from('meals').select('id').limit(1);
+      if (error) {
+        if (
+          error.code === '42P01' ||
+          error.message?.includes('does not exist') ||
+          error.message?.includes('relation "meals"')
+        ) {
+          setSupabaseStatus('error');
+          showConfirmDialog({
+            title: 'ยังไม่พบตาราง meals!',
+            message:
+              'เชื่อมต่อไปยัง Supabase ได้แล้ว แต่ยังไม่มีตาราง "meals" ในฐานข้อมูล\n\nต้องการเปิด Guide เพื่อดูคำสั่ง SQL สร้างตารางในคลิกเดียวหรือไม่?',
+            confirmText: 'เปิด Guide ดูคำสั่ง SQL',
+            cancelText: 'ปิด',
+            onConfirm: () => setShowSupabaseGuideModal(true),
+          });
+          return;
+        }
+        throw error;
+      }
+
+      // Success: Save credentials to local storage
+      setSupabaseClientInstance(client);
+      setSupabaseStatus('connected');
+      await AsyncStorage.setItem(STORAGE_SUPABASE_URL_KEY, url);
+      await AsyncStorage.setItem(STORAGE_SUPABASE_KEY_KEY, key);
+
+      // Check if there are local meals to offer uploading
+      const raw = await AsyncStorage.getItem(LOCAL_MEALS_KEY);
+      const locals: Meal[] = raw ? JSON.parse(raw) : [];
+
+      if (locals.length > 0) {
+        showConfirmDialog({
+          title: 'เชื่อมต่อ Supabase สำเร็จ! 🎉',
+          message: `พบประวัติมื้ออาหาร ${locals.length} มื้อในเครื่อง ต้องการอัปโหลดสำรองข้อมูลขึ้น Supabase ส่วนตัวของคุณตอนนี้เลยหรือไม่?`,
+          confirmText: 'อัปโหลดสำรองข้อมูล',
+          cancelText: 'ไว้ภายหลัง',
+          onConfirm: () => uploadLocalMealsToCloud(client, locals),
+        });
+      } else {
+        showToast('เชื่อมต่อ Supabase และพบตาราง meals พร้อมใช้งานแล้ว!', 'success', 'เชื่อมต่อสำเร็จ');
+        fetchRecentMeals(client);
+      }
+    } catch (err: any) {
+      console.warn('Supabase test failed:', err);
+      setSupabaseStatus('error');
+      showToast(err.message || 'ไม่สามารถเชื่อมต่อได้ ตรวจสอบ URL และ Key', 'error', 'เชื่อมต่อไม่สำเร็จ');
+    } finally {
+      setTestingSupabase(false);
+    }
+  };
+
+  const uploadLocalMealsToCloud = async (client: SupabaseClient, meals: Meal[]) => {
+    try {
+      showToast(`กำลังอัปโหลด ${meals.length} มื้อขึ้น Supabase...`, 'info', 'กำลังสำรองข้อมูล');
+      const payload = meals.map((m) => ({
+        dish_name: m.dish_name || 'อาหารไม่ระบุชื่อ',
+        calories: Math.round(Number(m.calories) || 0),
+        protein: parseFloat(String(m.protein || 0)),
+        carbs: parseFloat(String(m.carbs || 0)),
+        fat: parseFloat(String(m.fat || 0)),
+        health_score: Math.min(10, Math.max(1, Math.round(Number(m.health_score) || 5))),
+        roast_comment: m.roast_comment || '',
+        created_at: m.created_at || new Date().toISOString(),
+      }));
+      const { error } = await client.from('meals').insert(payload);
+      if (error) throw error;
+      showToast(`สำรองข้อมูล ${meals.length} มื้อขึ้น Supabase เรียบร้อย!`, 'success', 'สำรองข้อมูลสำเร็จ');
+      fetchRecentMeals(client);
+    } catch (e: any) {
+      showToast(e.message || 'อัปโหลดสำรองข้อมูลไม่สำเร็จ', 'error', 'เกิดข้อผิดพลาด');
+    }
+  };
+
+  const clearLocalMeals = () => {
+    showConfirmDialog({
+      title: 'ล้างประวัติมื้ออาหาร?',
+      message: 'คุณต้องการลบประวัติมื้ออาหารทั้งหมดออกจากเครื่องนี้ใช่หรือไม่? ข้อมูลที่ถูกลบจะไม่สามารถกู้คืนได้',
+      confirmText: 'ลบทั้งหมด',
+      cancelText: 'ยกเลิก',
+      onConfirm: async () => {
+        try {
+          await AsyncStorage.removeItem(LOCAL_MEALS_KEY);
+          setRecentMeals([]);
+          showToast('ลบประวัติมื้ออาหารทั้งหมดเรียบร้อยแล้ว', 'info', 'ล้างข้อมูลสำเร็จ');
+        } catch (e) {
+          showToast('ไม่สามารถลบประวัติได้', 'error');
+        }
+      },
+    });
+  };
+
+  const handleReportRoast = (comment: string) => {
+    showConfirmDialog({
+      title: 'รายงานข้อความ AI ไม่เหมาะสม',
+      message: `คุณต้องการรายงานข้อความของเทรนเนอร์ AI ว่ามีเนื้อหาไม่เหมาะสม (เช่น คำหยาบคาย, Body shaming หรือคำแนะนำที่ไม่ปลอดภัย) ใช่หรือไม่?\n\n"${comment.slice(0, 80)}..."`,
+      confirmText: 'ยืนยันรายงาน',
+      cancelText: 'ยกเลิก',
+      onConfirm: () => {
+        showToast(
+          'ระบบบันทึกรายงานของคุณแล้ว เราจะนำไปปรับปรุงตัวกรองความปลอดภัยของ AI ให้ดียิ่งขึ้น',
+          'success',
+          'รายงานสำเร็จ'
+        );
+      },
+    });
   };
 
   const is503Error = (err: any): boolean => {
@@ -370,8 +611,9 @@ export default function App() {
     if (!keyToUse) {
       showConfirmDialog({
         title: 'ต้องระบุ Gemini API Key',
-        message: 'กรุณากรอก Gemini API Key เพื่อให้ AI เริ่มวิเคราะห์จานอาหาร',
-        confirmText: 'ไปหน้าตั้งค่า',
+        message:
+          'Rate My Meal ใช้ AI ในการวิเคราะห์สารอาหารและคำนวณแคลอรี่ กรุณาระบุ Gemini API Key ของคุณในหน้าตั้งค่า (สามารถกดรับฟรีได้ใน 1 นาทีที่ Google AI Studio ไม่ต้องผูกบัตร)',
+        confirmText: 'ไปหน้าตั้งค่าเพื่อกรอก Key',
         cancelText: 'ยกเลิก',
         onConfirm: () => setActiveTab('settings'),
       });
@@ -401,6 +643,7 @@ export default function App() {
 
       const prompt = `วิเคราะห์อาหารในภาพนี้อย่างแม่นยำ คำนวณแคลอรี่และสารอาหารหลัก (กรัม) 
 พร้อมเขียนคอมเมนต์ Roast แสบๆ สไตล์เทรนเนอร์สายฟิตเนสปากร้ายแต่หวังดี
+(ข้อกำหนดความปลอดภัยและนโยบาย: ห้ามใช้คำหยาบคายรุนแรง ห้ามเหยียดรูปร่างหรือล้อเลียนปมด้อยเด็ดขาด (No Body Shaming) และห้ามแนะนำพฤติกรรมการอดอาหารที่เป็นอันตราย ให้เน้นขำขัน เสียดสีเชิงบวก และแนะนำการปรับอาหารอย่างสร้างสรรค์)
 ตอบกลับเป็น JSON Format เดียวตามนี้:
 {
   "dish_name": string,
@@ -461,28 +704,19 @@ export default function App() {
         showToast(`วิเคราะห์ ${parsed.dish_name} สำเร็จ!`, 'success', 'วิเคราะห์เสร็จสิ้น');
       }
 
-      // Auto-sync to Supabase meals table
-      setSyncStatus('syncing');
-      const { error: dbError } = await supabase.from('meals').insert([
-        {
-          dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
-          calories: Math.round(Number(parsed.calories) || 0),
-          protein: parseFloat(String(parsed.protein || 0)),
-          carbs: parseFloat(String(parsed.carbs || 0)),
-          fat: parseFloat(String(parsed.fat || 0)),
-          health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
-          roast_comment: parsed.roast_comment || '',
-        },
-      ]);
-
-      if (dbError) {
-        console.warn('Supabase insert warning:', dbError.message);
-        setSyncStatus('error');
-        showToast('ไม่สามารถบันทึกประวัติลง Supabase ได้', 'warning', 'Sync Issue');
-      } else {
-        setSyncStatus('synced');
-        fetchRecentMeals();
-      }
+      // Save locally to device storage
+      const newMealItem: Meal = {
+        id: String(Date.now()),
+        dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
+        calories: Math.round(Number(parsed.calories) || 0),
+        protein: parseFloat(String(parsed.protein || 0)),
+        carbs: parseFloat(String(parsed.carbs || 0)),
+        fat: parseFloat(String(parsed.fat || 0)),
+        health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
+        roast_comment: parsed.roast_comment || '',
+        created_at: new Date().toISOString(),
+      };
+      await saveMealLocally(newMealItem);
     } catch (err: any) {
       console.error('Analysis error:', err);
       console.log(`[Gemini] failed model=${modelToUse} img=${imgKB(base64Data)}${elapsedOf(err)} err=${String(err?.message || err).slice(0, 200)}`);
@@ -532,7 +766,7 @@ export default function App() {
     console.log(`[Groq] attempt=1 model=${groqModel} img=${imgKB(base64Data)}`);
 
     try {
-      const prompt = `วิเคราะห์อาหารในภาพนี้อย่างแม่นยำ คำนวณแคลอรี่และสารอาหารหลัก (กรัม) พร้อมเขียนคอมเมนต์ Roast แสบๆ สไตล์เทรนเนอร์สายฟิตเนสปากร้ายแต่หวังดี ตอบกลับเป็น JSON เท่านั้นตามนี้: {"dish_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "health_score": number (1-10), "roast_comment": string (ภาษาไทย)}`;
+      const prompt = `วิเคราะห์อาหารในภาพนี้อย่างแม่นยำ คำนวณแคลอรี่และสารอาหารหลัก (กรัม) พร้อมเขียนคอมเมนต์ Roast แสบๆ สไตล์เทรนเนอร์สายฟิตเนสปากร้ายแต่หวังดี (ข้อกำหนดความปลอดภัยและนโยบาย: ห้ามมีคำหยาบคายรุนแรง ห้ามเหยียดรูปร่างหรือล้อเลียนปมด้อยเด็ดขาด (No Body Shaming) และห้ามแนะนำพฤติกรรมการอดอาหารที่เป็นอันตราย ให้เน้นขำขัน เสียดสีเชิงบวก และแนะนำการปรับอาหารอย่างสร้างสรรค์) ตอบกลับเป็น JSON เท่านั้นตามนี้: {"dish_name": string, "calories": number, "protein": number, "carbs": number, "fat": number, "health_score": number (1-10), "roast_comment": string (ภาษาไทย)}`;
 
       setLoadingStep('กำลังคำนวณแคลอรี่ & เตรียมประโยคเชือดเฉือน...');
       const { value: res, elapsedMs } = await runWithAbort(
@@ -592,27 +826,19 @@ export default function App() {
       setSwitchedToLowerModel(true);
       showToast(`วิเคราะห์ ${parsed.dish_name} สำเร็จด้วย Groq!`, 'success', 'วิเคราะห์เสร็จสิ้น');
 
-      setSyncStatus('syncing');
-      const { error: dbError } = await supabase.from('meals').insert([
-        {
-          dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
-          calories: Math.round(Number(parsed.calories) || 0),
-          protein: parseFloat(String(parsed.protein || 0)),
-          carbs: parseFloat(String(parsed.carbs || 0)),
-          fat: parseFloat(String(parsed.fat || 0)),
-          health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
-          roast_comment: parsed.roast_comment || '',
-        },
-      ]);
-
-      if (dbError) {
-        console.warn('Supabase insert warning:', dbError.message);
-        setSyncStatus('error');
-        showToast('ไม่สามารถบันทึกประวัติลง Supabase ได้', 'warning', 'Sync Issue');
-      } else {
-        setSyncStatus('synced');
-        fetchRecentMeals();
-      }
+      // Save locally to device storage
+      const newMealItem: Meal = {
+        id: String(Date.now()),
+        dish_name: parsed.dish_name || 'อาหารไม่ระบุชื่อ',
+        calories: Math.round(Number(parsed.calories) || 0),
+        protein: parseFloat(String(parsed.protein || 0)),
+        carbs: parseFloat(String(parsed.carbs || 0)),
+        fat: parseFloat(String(parsed.fat || 0)),
+        health_score: Math.min(10, Math.max(1, Math.round(Number(parsed.health_score) || 5))),
+        roast_comment: parsed.roast_comment || '',
+        created_at: new Date().toISOString(),
+      };
+      await saveMealLocally(newMealItem);
     } catch (err: any) {
       console.error('Groq analysis error:', err);
       console.log(`[Groq] failed model=${groqModel} img=${imgKB(base64Data)}${elapsedOf(err)} err=${String(err?.message || err).slice(0, 200)}`);
@@ -1139,8 +1365,17 @@ export default function App() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.roastAuthor}>คำบ่นจากเทรนเนอร์สายโหด:</Text>
-                      <Text style={styles.roastAuthorSub}>ประเมินความฟิตของจานนี้</Text>
+                      <Text style={styles.roastAuthorSub}>ประเมินความฟิตของจานนี้ (AI Coach)</Text>
                     </View>
+                    {/* AIGC In-app Report Button */}
+                    <TouchableOpacity
+                      style={styles.roastReportBtn}
+                      onPress={() => handleReportRoast(mealData.roast_comment)}
+                      activeOpacity={0.7}
+                    >
+                      <AlertIcon size={11} color={C10_ACCENT} />
+                      <Text style={styles.roastReportText}>รายงาน</Text>
+                    </TouchableOpacity>
                   </View>
 
                   <View style={styles.roastBubble}>
@@ -1151,17 +1386,41 @@ export default function App() {
                   </View>
                 </View>
 
-                {/* Supabase Sync Status Indicator */}
+                {/* Health & AI Medical Disclaimer */}
+                <View style={styles.disclaimerBox}>
+                  <InfoIcon size={13} color={C10_DARK} />
+                  <Text style={styles.disclaimerText}>
+                    ข้อจำกัดความรับผิดชอบ: ข้อมูลโภชนาการและคำแนะนำวิเคราะห์โดย AI เพื่อการประเมินเบื้องต้น ไม่ใช่คำแนะนำทางการแพทย์หรือนักกำหนดอาหารวิชาชีพ
+                  </Text>
+                </View>
+
+                {/* Local Storage & Personal Cloud Sync Status Indicator */}
                 <View style={styles.syncRow}>
-                  <CloudIcon size={14} color={syncStatus === 'synced' ? C10_DARK : C10_ACCENT} />
+                  {supabaseClientInstance ? (
+                    <CloudIcon size={14} color={syncStatus === 'synced' ? C10_DARK : C10_ACCENT} />
+                  ) : (
+                    <SaveIcon size={14} color={C10_DARK} />
+                  )}
                   {syncStatus === 'syncing' && (
-                    <Text style={styles.syncSyncing}>กำลังบันทึกข้อมูลลง Supabase...</Text>
+                    <Text style={styles.syncSyncing}>
+                      {supabaseClientInstance
+                        ? 'กำลังบันทึกลงเครื่อง & ซิงค์ขึ้น Supabase ส่วนตัว...'
+                        : 'กำลังบันทึกข้อมูลลงเครื่อง...'}
+                    </Text>
                   )}
                   {syncStatus === 'synced' && (
-                    <Text style={styles.syncSuccess}>ซิงค์เข้าฐานข้อมูล Supabase เรียบร้อย</Text>
+                    <Text style={styles.syncSuccess}>
+                      {supabaseClientInstance
+                        ? 'ซิงค์เข้า Supabase ส่วนตัวเรียบร้อย (Cloud Backup)'
+                        : 'บันทึกลงประวัติส่วนตัวบนเครื่องเรียบร้อย (Local Storage)'}
+                    </Text>
                   )}
                   {syncStatus === 'error' && (
-                    <Text style={styles.syncError}>ซิงค์ข้อมูลเข้า Supabase ไม่สำเร็จ</Text>
+                    <Text style={styles.syncError}>
+                      {supabaseClientInstance
+                        ? 'บันทึกลงเครื่องแล้ว แต่ซิงค์ขึ้น Supabase ไม่สำเร็จ'
+                        : 'บันทึกข้อมูลลงเครื่องไม่สำเร็จ'}
+                    </Text>
                   )}
                 </View>
 
@@ -1190,22 +1449,34 @@ export default function App() {
         {activeTab === 'history' && (
           <View style={styles.tabContentWrapper}>
             <View style={styles.historyHeaderBar}>
-              <View>
-                <Text style={styles.sectionHeading}>ประวัติมื้อที่เคยโดนสวด</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sectionHeading}>ประวัติมื้อที่เคยบันทึก</Text>
                 <Text style={styles.sectionSubHeading}>
-                  บันทึกทั้งหมด {recentMeals.length} มื้อล่าสุดจาก Supabase
+                  {recentMeals.length} มื้อล่าสุด {supabaseClientInstance ? '• ซิงค์คลาวด์แล้ว ☁️' : '• บันทึกในเครื่อง'}
                 </Text>
               </View>
 
-              <TouchableOpacity
-                style={styles.refreshIconBtn}
-                onPress={fetchRecentMeals}
-                disabled={refreshingHistory}
-                activeOpacity={0.7}
-              >
-                <RefreshIcon size={14} color={C10_DARK} />
-                <Text style={styles.refreshIconText}>รีเฟรช</Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                {recentMeals.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.refreshIconBtn, { backgroundColor: '#FAD28C' }]}
+                    onPress={clearLocalMeals}
+                    activeOpacity={0.7}
+                  >
+                    <CloseIcon size={12} color={C10_DARK} />
+                    <Text style={styles.refreshIconText}>ล้างประวัติ</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.refreshIconBtn}
+                  onPress={() => fetchRecentMeals()}
+                  disabled={refreshingHistory}
+                  activeOpacity={0.7}
+                >
+                  <RefreshIcon size={14} color={C10_DARK} />
+                  <Text style={styles.refreshIconText}>รีเฟรช</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             {recentMeals.length === 0 ? (
@@ -1292,14 +1563,28 @@ export default function App() {
                           "{item.roast_comment}"
                         </Text>
                         <View style={styles.historyExpandHintRow}>
-                          <Text style={styles.historyExpandHint}>
-                            {isExpanded ? 'แตะเพื่อย่อ' : 'แตะเพื่ออ่านเต็ม'}
-                          </Text>
-                          <ChevronIcon
-                            size={10}
-                            color={C10_ACCENT}
-                            direction={isExpanded ? 'up' : 'down'}
-                          />
+                          <TouchableOpacity
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              handleReportRoast(item.roast_comment);
+                            }}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}
+                          >
+                            <AlertIcon size={10} color={C10_ACCENT} />
+                            <Text style={[styles.historyExpandHint, { color: C10_ACCENT }]}>รายงาน</Text>
+                          </TouchableOpacity>
+
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                            <Text style={styles.historyExpandHint}>
+                              {isExpanded ? 'แตะเพื่อย่อ' : 'แตะเพื่ออ่านเต็ม'}
+                            </Text>
+                            <ChevronIcon
+                              size={10}
+                              color={C10_ACCENT}
+                              direction={isExpanded ? 'up' : 'down'}
+                            />
+                          </View>
                         </View>
                       </View>
                     </TouchableOpacity>
@@ -1327,22 +1612,37 @@ export default function App() {
                   <KeyIcon size={16} color={C10_DARK} />
                   <Text style={styles.settingsCardTitle}>Gemini API Key</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.showKeyToggleBtn}
-                  onPress={() => setShowApiKeyText(!showApiKeyText)}
-                  activeOpacity={0.7}
-                >
-                  <EyeIcon size={15} color={C10_DARK} closed={!showApiKeyText} />
-                  <Text style={styles.showKeyToggleText}>
-                    {showApiKeyText ? 'ซ่อน' : 'แสดง'}
-                  </Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View
+                    style={[
+                      styles.cloudStatusBadge,
+                      geminiApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusError,
+                    ]}
+                  >
+                    <Text style={styles.cloudStatusBadgeText}>
+                      {geminiApiKey.trim() ? '● มี Key แล้ว' : '○ ต้องระบุ Key'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.showKeyToggleBtn}
+                    onPress={() => setShowApiKeyText(!showApiKeyText)}
+                    activeOpacity={0.7}
+                  >
+                    <EyeIcon size={15} color={C10_DARK} closed={!showApiKeyText} />
+                    <Text style={styles.showKeyToggleText}>
+                      {showApiKeyText ? 'ซ่อน' : 'แสดง'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <TextInput
                 style={styles.settingsInput}
                 value={geminiApiKey}
-                onChangeText={setGeminiApiKey}
+                onChangeText={(text) => {
+                  setGeminiApiKey(text);
+                  AsyncStorage.setItem(STORAGE_GEMINI_KEY, text).catch(() => {});
+                }}
                 placeholder="ระบุ Gemini API Key (AIzaSy...)"
                 placeholderTextColor={C10_ACCENT}
                 secureTextEntry={!showApiKeyText}
@@ -1350,8 +1650,16 @@ export default function App() {
                 autoCorrect={false}
               />
               <Text style={styles.settingsInputHint}>
-                รับ API Key ฟรีได้ที่ Google AI Studio (ai.google.dev)
+                สร้าง Key ฟรี ไม่ต้องผูกบัตรได้ที่ Google AI Studio
               </Text>
+              <TouchableOpacity
+                style={[styles.guideStepBtn, { backgroundColor: C30, marginTop: 8 }]}
+                onPress={() => Linking.openURL('https://aistudio.google.com/app/apikey')}
+                activeOpacity={0.8}
+              >
+                <KeyIcon size={14} color={C10_DARK} />
+                <Text style={styles.guideStepBtnText}>รับ Gemini API Key ฟรีที่ Google AI Studio ↗</Text>
+              </TouchableOpacity>
             </View>
 
             {/* Groq API Key Card (free alternative) */}
@@ -1361,22 +1669,37 @@ export default function App() {
                   <KeyIcon size={16} color={C10_DARK} />
                   <Text style={styles.settingsCardTitle}>Groq API Key (สำรองฟรี)</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.showKeyToggleBtn}
-                  onPress={() => setShowGroqKeyText(!showGroqKeyText)}
-                  activeOpacity={0.7}
-                >
-                  <EyeIcon size={15} color={C10_DARK} closed={!showGroqKeyText} />
-                  <Text style={styles.showKeyToggleText}>
-                    {showGroqKeyText ? 'ซ่อน' : 'แสดง'}
-                  </Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View
+                    style={[
+                      styles.cloudStatusBadge,
+                      groqApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusOffline,
+                    ]}
+                  >
+                    <Text style={styles.cloudStatusBadgeText}>
+                      {groqApiKey.trim() ? '● มี Key แล้ว' : '○ ยังไม่มี Key'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.showKeyToggleBtn}
+                    onPress={() => setShowGroqKeyText(!showGroqKeyText)}
+                    activeOpacity={0.7}
+                  >
+                    <EyeIcon size={15} color={C10_DARK} closed={!showGroqKeyText} />
+                    <Text style={styles.showKeyToggleText}>
+                      {showGroqKeyText ? 'ซ่อน' : 'แสดง'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <TextInput
                 style={styles.settingsInput}
                 value={groqApiKey}
-                onChangeText={setGroqApiKey}
+                onChangeText={(text) => {
+                  setGroqApiKey(text);
+                  AsyncStorage.setItem(STORAGE_GROQ_KEY, text).catch(() => {});
+                }}
                 placeholder="ระบุ Groq API Key (gsk_...)"
                 placeholderTextColor={C10_ACCENT}
                 secureTextEntry={!showGroqKeyText}
@@ -1386,6 +1709,14 @@ export default function App() {
               <Text style={styles.settingsInputHint}>
                 ฟรี ไม่ต้องผูกบัตร — ขอได้ที่ console.groq.com/keys (30 req/min, 1,000 req/day)
               </Text>
+              <TouchableOpacity
+                style={[styles.guideStepBtn, { backgroundColor: C30, marginTop: 8 }]}
+                onPress={() => Linking.openURL('https://console.groq.com/keys')}
+                activeOpacity={0.8}
+              >
+                <KeyIcon size={14} color={C10_DARK} />
+                <Text style={styles.guideStepBtnText}>รับ Groq API Key ฟรีที่ console.groq.com ↗</Text>
+              </TouchableOpacity>
             </View>
 
             {/* Provider Selection Card */}
@@ -1623,17 +1954,157 @@ export default function App() {
               )}
             </View>
 
-            {/* Supabase Connection Status Card */}
+            {/* Personal Supabase Cloud Database Configuration Card */}
+            <View style={styles.settingsCard}>
+              <View style={styles.settingsCardHeader}>
+                <View style={styles.settingsCardTitleRow}>
+                  <CloudIcon size={16} color={C10_DARK} />
+                  <Text style={styles.settingsCardTitle}>Supabase ส่วนตัว (Cloud Backup)</Text>
+                </View>
+                <View
+                  style={[
+                    styles.cloudStatusBadge,
+                    supabaseStatus === 'connected'
+                      ? styles.cloudStatusConnected
+                      : supabaseStatus === 'error'
+                      ? styles.cloudStatusError
+                      : styles.cloudStatusOffline,
+                  ]}
+                >
+                  <Text style={styles.cloudStatusBadgeText}>
+                    {supabaseStatus === 'connected'
+                      ? '● เชื่อมต่อแล้ว'
+                      : supabaseStatus === 'error'
+                      ? '● ติดปัญหา'
+                      : '○ บันทึกในเครื่อง'}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={styles.settingsCardSub}>
+                เชื่อมต่อ Supabase ฟรีของคุณเพื่อสำรองข้อมูลประวัติอาหารอัตโนมัติ ข้อมูลไม่หาย เปลี่ยนเครื่องก็ดึงกลับมาได้ตลอดเวลา
+              </Text>
+
+              {/* 3-Step Guide Open Button */}
+              <TouchableOpacity
+                style={[styles.simulate503Btn, { backgroundColor: '#FAD28C', marginBottom: 12 }]}
+                onPress={() => setShowSupabaseGuideModal(true)}
+                activeOpacity={0.75}
+              >
+                <InfoIcon size={15} color={C10_DARK} />
+                <Text style={[styles.simulate503Text, { fontWeight: '800' }]}>
+                  📖 วิธีสร้าง Supabase ฟรีของตัวเอง (3 ขั้นตอนง่ายๆ) ↗
+                </Text>
+              </TouchableOpacity>
+
+              {/* Supabase URL Input */}
+              <Text style={styles.settingsInputLabel}>Supabase Project URL</Text>
+              <TextInput
+                style={styles.settingsInput}
+                value={supabaseUrl}
+                onChangeText={(text) => {
+                  setSupabaseUrl(text);
+                  setSupabaseStatus('not_configured');
+                }}
+                placeholder="https://xxxxxxxxxxxx.supabase.co"
+                placeholderTextColor={C10_ACCENT}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
+              {/* Supabase Anon Key Input with Eye Toggle */}
+              <View style={[styles.settingsCardHeader, { marginTop: 8 }]}>
+                <Text style={styles.settingsInputLabel}>Supabase Anon / Public Key</Text>
+                <TouchableOpacity
+                  style={styles.showKeyToggleBtn}
+                  onPress={() => setShowSupabaseKeyText(!showSupabaseKeyText)}
+                  activeOpacity={0.7}
+                >
+                  <EyeIcon size={14} color={C10_DARK} closed={!showSupabaseKeyText} />
+                  <Text style={styles.showKeyToggleText}>
+                    {showSupabaseKeyText ? 'ซ่อน' : 'แสดง'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.settingsInput}
+                value={supabaseAnonKey}
+                onChangeText={(text) => {
+                  setSupabaseAnonKey(text);
+                  setSupabaseStatus('not_configured');
+                }}
+                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                placeholderTextColor={C10_ACCENT}
+                secureTextEntry={!showSupabaseKeyText}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
+              {/* Action Buttons: Test Connection & Cloud Backup */}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.btnPrimary, { flex: 1, paddingVertical: 10 }]}
+                  onPress={testSupabaseConnection}
+                  disabled={testingSupabase}
+                  activeOpacity={0.8}
+                >
+                  {testingSupabase ? (
+                    <ActivityIndicator size="small" color={C50} />
+                  ) : (
+                    <>
+                      <CpuIcon size={14} color={C50} />
+                      <Text style={styles.btnPrimaryText}>ทดสอบการเชื่อมต่อ</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                {supabaseClientInstance && recentMeals.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.btnSecondary, { flex: 1, paddingVertical: 10 }]}
+                    onPress={() => uploadLocalMealsToCloud(supabaseClientInstance, recentMeals)}
+                    activeOpacity={0.8}
+                  >
+                    <CloudIcon size={14} color={C10_DARK} />
+                    <Text style={styles.btnSecondaryText}>สำรอง {recentMeals.length} มื้อ</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {/* Local Storage & Privacy Policy Card */}
             <View style={styles.settingsCard}>
               <View style={styles.settingsCardTitleRow}>
-                <CloudIcon size={16} color={C10_DARK} />
-                <Text style={styles.settingsCardTitle}>Supabase Cloud Database</Text>
+                <SaveIcon size={16} color={C10_DARK} />
+                <Text style={styles.settingsCardTitle}>ข้อมูลส่วนบุคคล & ความเป็นส่วนตัว</Text>
               </View>
+              <Text style={styles.settingsCardSub}>
+                ประวัติมื้ออาหารทั้งหมดถูกจัดเก็บอยู่บนเครื่องของคุณเท่านั้น (Local Storage) ไม่มีการส่งข้อมูลประวัติออกนอกเครื่อง
+              </Text>
               <View style={styles.supabaseStatusRow}>
                 <View style={styles.supabaseDotOnline} />
                 <Text style={styles.supabaseStatusText}>
-                  เชื่อมต่อตาราง meals เรียบร้อย (Auto-sync Enabled)
+                  สถานะ: Local Storage บนเครื่อง (100% Privacy)
                 </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.simulate503Btn, { flex: 1 }]}
+                  onPress={() => setShowPrivacyModal(true)}
+                  activeOpacity={0.75}
+                >
+                  <InfoIcon size={14} color={C10_DARK} />
+                  <Text style={styles.simulate503Text}>นโยบายความเป็นส่วนตัว</Text>
+                </TouchableOpacity>
+                {recentMeals.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.simulate503Btn, { flex: 1, backgroundColor: '#FAD28C' }]}
+                    onPress={clearLocalMeals}
+                    activeOpacity={0.75}
+                  >
+                    <CloseIcon size={14} color={C10_DARK} />
+                    <Text style={styles.simulate503Text}>ล้างประวัติทั้งหมด</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
@@ -1914,6 +2385,178 @@ export default function App() {
             >
               <CloseIcon size={14} color={C10_ACCENT} />
               <Text style={styles.cancelBtnText}>ยกเลิก</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PRIVACY POLICY MODAL (Google Play Policy Compliant) */}
+      <Modal
+        visible={showPrivacyModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPrivacyModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal503Content, { maxWidth: contentWidth, maxHeight: '85%' }]}>
+            <View style={styles.modal503IconRow}>
+              <View style={[styles.modal503BadgePill, { backgroundColor: C10_DARK }]}>
+                <InfoIcon size={14} color={C50} />
+                <Text style={styles.modal503BadgePillText}>PRIVACY</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modal503Title}>นโยบายความเป็นส่วนตัว</Text>
+                <Text style={styles.modal503Badge}>Privacy Policy & Data Safety</Text>
+              </View>
+            </View>
+
+            <ScrollView style={{ marginVertical: 12 }} showsVerticalScrollIndicator={false}>
+              <View style={styles.privacySection}>
+                <Text style={styles.privacySectionTitle}>1. การประมวลผลรูปภาพอาหาร (Image Processing)</Text>
+                <Text style={styles.privacySectionBody}>
+                  แอปพลิเคชันจะส่งรูปภาพอาหารที่คุณเลือกหรือถ่ายไปยังบริการ AI (Google Gemini หรือ Groq) ผ่านการเชื่อมต่อแบบเข้ารหัส (HTTPS) เพื่อวัตถุประสงค์ในการวิเคราะห์ปริมาณแคลอรี่และสารอาหารเท่านั้น โดยจะไม่มีการบันทึกหรือจัดเก็บไฟล์ภาพถ่ายของคุณลงในฐานข้อมูลหรือเซิร์ฟเวอร์ภายนอกใดๆ
+                </Text>
+              </View>
+
+              <View style={styles.privacySection}>
+                <Text style={styles.privacySectionTitle}>2. การจัดเก็บข้อมูลประวัติ (Local Storage Only)</Text>
+                <Text style={styles.privacySectionBody}>
+                  ข้อมูลมื้ออาหาร เช่น ชื่ออาหาร, แคลอรี่, สารอาหาร (โปรตีน, คาร์บ, ไขมัน) และข้อความ Roast จะถูกจัดเก็บไว้เฉพาะในหน่วยความจำของอุปกรณ์ (Local Storage) ของคุณเท่านั้น ไม่มีการส่งประวัติอาหารออกไปยังระบบคลาวด์ภายนอก
+                </Text>
+              </View>
+
+              <View style={styles.privacySection}>
+                <Text style={styles.privacySectionTitle}>3. สิทธิ์การเข้าถึงอุปกรณ์ (App Permissions)</Text>
+                <Text style={styles.privacySectionBody}>
+                  • กล้อง (Camera): ใช้เฉพาะเมื่อคุณกดปุ่มถ่ายรูปอาหารเพื่อส่งวิเคราะห์{'\n'}
+                  • คลังภาพ (Photos): ใช้เฉพาะเมื่อคุณเลือกรูปภาพอาหารที่มีอยู่แล้ว{'\n'}
+                  แอปไม่มีการเข้าถึงไมโครโฟน ตำแหน่งที่ตั้ง หรือข้อมูลระบุตัวตนส่วนบุคคลอื่นใด
+                </Text>
+              </View>
+
+              <View style={styles.privacySection}>
+                <Text style={styles.privacySectionTitle}>4. สิทธิ์การลบข้อมูล (User Data Deletion)</Text>
+                <Text style={styles.privacySectionBody}>
+                  คุณสามารถลบข้อมูลประวัติอาหารทั้งหมดออกจากอุปกรณ์ของคุณได้อย่างสมบูรณ์ตลอดเวลา ด้วยการกดปุ่ม "ล้างประวัติ" ในหน้าประวัติหรือหน้าตั้งค่า
+                </Text>
+              </View>
+
+              <View style={styles.privacySection}>
+                <Text style={styles.privacySectionTitle}>5. ข้อจำกัดความรับผิดชอบทางการแพทย์ (Medical Disclaimer)</Text>
+                <Text style={styles.privacySectionBody}>
+                  ข้อมูลและคำแนะนำทั้งหมดในแอปสร้างขึ้นโดยปัญญาประดิษฐ์ (AI) เพื่อการประเมินเบื้องต้นและความบันเทิง ไม่ใช่คำแนะนำทางการแพทย์ คำวินิจฉัยโรค หรือคำแนะนำจากนักกำหนดอาหารวิชาชีพ
+                </Text>
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.btnPrimary, { width: '100%', marginTop: 4 }]}
+              onPress={() => setShowPrivacyModal(false)}
+              activeOpacity={0.8}
+            >
+              <CheckIcon size={14} color={C50} />
+              <Text style={styles.btnPrimaryText}>เข้าใจและรับทราบ</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 3-STEP PERSONAL SUPABASE SETUP GUIDE MODAL */}
+      <Modal
+        visible={showSupabaseGuideModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowSupabaseGuideModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal503Content, { maxWidth: contentWidth, maxHeight: '88%' }]}>
+            <View style={styles.modal503IconRow}>
+              <View style={[styles.modal503BadgePill, { backgroundColor: C10_DARK }]}>
+                <CloudIcon size={14} color={C50} />
+                <Text style={styles.modal503BadgePillText}>SUPABASE GUIDE</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modal503Title}>วิธีสร้าง Supabase ส่วนตัว</Text>
+                <Text style={styles.modal503Badge}>สำรองข้อมูลฟรีตลอดชีพ (3 ขั้นตอนง่ายๆ)</Text>
+              </View>
+            </View>
+
+            <ScrollView style={{ marginVertical: 12 }} showsVerticalScrollIndicator={false}>
+              {/* Step 1 */}
+              <View style={styles.guideStepCard}>
+                <View style={styles.guideStepNumberBadge}>
+                  <Text style={styles.guideStepNumberText}>1</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.guideStepTitle}>สมัครและสร้างโปรเจกต์ใหม่</Text>
+                  <Text style={styles.guideStepDesc}>
+                    ไปที่ Supabase (ฟรี ไม่ต้องผูกบัตร) กดปุ่ม "New Project" ตั้งชื่อ เช่น RateMyMeal และตั้งรหัสผ่านฐานข้อมูล
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.guideStepBtn, { backgroundColor: C30 }]}
+                    onPress={() => Linking.openURL('https://supabase.com/dashboard/projects')}
+                    activeOpacity={0.8}
+                  >
+                    <CloudIcon size={14} color={C10_DARK} />
+                    <Text style={styles.guideStepBtnText}>เปิดเว็บ Supabase Dashboard ↗</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Step 2 */}
+              <View style={styles.guideStepCard}>
+                <View style={styles.guideStepNumberBadge}>
+                  <Text style={styles.guideStepNumberText}>2</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.guideStepTitle}>สร้างตาราง meals ใน 1 คลิก</Text>
+                  <Text style={styles.guideStepDesc}>
+                    ไปที่เมนู <Text style={{ fontWeight: '800' }}>SQL Editor</Text> แถบซ้ายบน Supabase แล้วกดปุ่มคัดลอกด้านล่างนี้ นำไปวางแล้วกดปุ่ม <Text style={{ fontWeight: '800' }}>Run</Text>
+                  </Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.guideStepBtn,
+                      { backgroundColor: C50, borderColor: C10_DARK, borderWidth: 1.5 },
+                    ]}
+                    onPress={async () => {
+                      await Clipboard.setStringAsync(SUPABASE_MEALS_SQL);
+                      showToast(
+                        'คัดลอกคำสั่ง SQL เรียบร้อย! นำไปวางใน SQL Editor แล้วกด Run ได้เลย',
+                        'success',
+                        'คัดลอกสำเร็จ'
+                      );
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <CheckIcon size={14} color={C10_DARK} />
+                    <Text style={[styles.guideStepBtnText, { fontWeight: '800' }]}>
+                      📋 คัดลอกคำสั่ง SQL สร้างตาราง (Copy SQL)
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Step 3 */}
+              <View style={styles.guideStepCard}>
+                <View style={styles.guideStepNumberBadge}>
+                  <Text style={styles.guideStepNumberText}>3</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.guideStepTitle}>นำ URL และ Key มากรอกในแอป</Text>
+                  <Text style={styles.guideStepDesc}>
+                    ไปที่เมนู <Text style={{ fontWeight: '800' }}>Project Settings</Text> (ไอคอนเฟืองล่างซ้าย) → หัวข้อ <Text style={{ fontWeight: '800' }}>API</Text> คัดลอกค่า <Text style={{ fontWeight: '800' }}>Project URL</Text> และ <Text style={{ fontWeight: '800' }}>anon public key</Text> มากรอกในแอป แล้วกด "ทดสอบการเชื่อมต่อ"
+                  </Text>
+                </View>
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.btnPrimary, { width: '100%', marginTop: 4 }]}
+              onPress={() => setShowSupabaseGuideModal(false)}
+              activeOpacity={0.8}
+            >
+              <CheckIcon size={14} color={C50} />
+              <Text style={styles.btnPrimaryText}>เข้าใจแล้ว / ไปกรอกข้อมูล</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2599,6 +3242,59 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     fontWeight: '600',
   },
+  roastReportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: C50,
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+  },
+  roastReportText: {
+    color: C10_ACCENT,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  disclaimerBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#F5DC96',
+    borderWidth: 1,
+    borderColor: C10_ACCENT,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  disclaimerText: {
+    flex: 1,
+    color: C10_DARK,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  privacySection: {
+    marginBottom: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2A900',
+  },
+  privacySectionTitle: {
+    color: C10_DARK,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  privacySectionBody: {
+    color: C10_DARK,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
 
   /* Supabase Sync Indicator */
   syncRow: {
@@ -2979,6 +3675,89 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   supabaseStatusText: {
+    color: C10_DARK,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  /* Cloud Status Badges */
+  cloudStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  cloudStatusConnected: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#2E7D32',
+  },
+  cloudStatusError: {
+    backgroundColor: '#FFEBEE',
+    borderColor: '#C62828',
+  },
+  cloudStatusOffline: {
+    backgroundColor: C50,
+    borderColor: C10_ACCENT,
+  },
+  cloudStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: C10_DARK,
+  },
+  settingsInputLabel: {
+    color: C10_DARK,
+    fontSize: 11,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  /* Guide Modal Styles */
+  guideStepCard: {
+    flexDirection: 'row',
+    gap: 12,
+    backgroundColor: C50,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+  },
+  guideStepNumberBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: C10_DARK,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  guideStepNumberText: {
+    color: C50,
+    fontWeight: '900',
+    fontSize: 13,
+  },
+  guideStepTitle: {
+    color: C10_DARK,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  guideStepDesc: {
+    color: C10_DARK,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  guideStepBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    gap: 6,
+    marginTop: 2,
+  },
+  guideStepBtnText: {
     color: C10_DARK,
     fontSize: 12,
     fontWeight: '700',
