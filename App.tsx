@@ -454,7 +454,7 @@ export default function App() {
 
       if (locals.length > 0) {
         showConfirmDialog({
-          title: 'เชื่อมต่อ Supabase สำเร็จ! 🎉',
+          title: 'เชื่อมต่อ Supabase สำเร็จ',
           message: `พบประวัติมื้ออาหาร ${locals.length} มื้อในเครื่อง ต้องการอัปโหลดสำรองข้อมูลขึ้น Supabase ส่วนตัวของคุณตอนนี้เลยหรือไม่?`,
           confirmText: 'อัปโหลดสำรองข้อมูล',
           cancelText: 'ไว้ภายหลัง',
@@ -1040,7 +1040,14 @@ export default function App() {
               <FlameIcon size={16} color={C10_DARK} />
               <Text style={styles.logoBadgeText}>RMM</Text>
             </View>
-            <Text style={[styles.title, isCompact && { fontSize: 18 }]}>RATE MY MEAL</Text>
+            <Text
+              style={[styles.title, isCompact && { fontSize: 17 }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.75}
+            >
+              RATE MY MEAL
+            </Text>
           </View>
 
           {/* Model & Key Status Badge Button */}
@@ -1053,19 +1060,19 @@ export default function App() {
               style={[
                 styles.headerStatusIndicator,
                 {
-                  backgroundColor: geminiApiKey
+                  backgroundColor: geminiApiKey.trim() || groqApiKey.trim()
                     ? switchedToLowerModel
                       ? C10_ACCENT
-                      : C10_DARK
-                    : C10_ACCENT,
+                      : '#2E7D32'
+                    : '#C62828',
                 },
               ]}
             />
-            <Text style={styles.headerStatusText}>
-              {geminiApiKey || groqApiKey
+            <Text style={styles.headerStatusText} numberOfLines={1}>
+              {geminiApiKey.trim() || groqApiKey.trim()
                 ? aiProvider === 'groq'
-                  ? 'Groq Qwen'
-                  : currentModel.replace('gemini-', '').replace('-flash', ' Flash')
+                  ? 'Groq'
+                  : 'Gemini'
                 : 'ตั้งค่า Key'}
             </Text>
           </TouchableOpacity>
@@ -1452,7 +1459,7 @@ export default function App() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.sectionHeading}>ประวัติมื้อที่เคยบันทึก</Text>
                 <Text style={styles.sectionSubHeading}>
-                  {recentMeals.length} มื้อล่าสุด {supabaseClientInstance ? '• ซิงค์คลาวด์แล้ว ☁️' : '• บันทึกในเครื่อง'}
+                  {recentMeals.length} มื้อล่าสุด {supabaseClientInstance ? '• ซิงค์คลาวด์แล้ว' : '• บันทึกในเครื่อง'}
                 </Text>
               </View>
 
@@ -1612,43 +1619,42 @@ export default function App() {
                   <KeyIcon size={16} color={C10_DARK} />
                   <Text style={styles.settingsCardTitle}>Gemini API Key</Text>
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <View
-                    style={[
-                      styles.cloudStatusBadge,
-                      geminiApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusError,
-                    ]}
-                  >
-                    <Text style={styles.cloudStatusBadgeText}>
-                      {geminiApiKey.trim() ? '● มี Key แล้ว' : '○ ต้องระบุ Key'}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.showKeyToggleBtn}
-                    onPress={() => setShowApiKeyText(!showApiKeyText)}
-                    activeOpacity={0.7}
-                  >
-                    <EyeIcon size={15} color={C10_DARK} closed={!showApiKeyText} />
-                    <Text style={styles.showKeyToggleText}>
-                      {showApiKeyText ? 'ซ่อน' : 'แสดง'}
-                    </Text>
-                  </TouchableOpacity>
+                <View
+                  style={[
+                    styles.cloudStatusBadge,
+                    geminiApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusError,
+                  ]}
+                >
+                  <Text style={styles.cloudStatusBadgeText}>
+                    {geminiApiKey.trim() ? '● มี Key แล้ว' : '○ ต้องระบุ Key'}
+                  </Text>
                 </View>
               </View>
 
-              <TextInput
-                style={styles.settingsInput}
-                value={geminiApiKey}
-                onChangeText={(text) => {
-                  setGeminiApiKey(text);
-                  AsyncStorage.setItem(STORAGE_GEMINI_KEY, text).catch(() => {});
-                }}
-                placeholder="ระบุ Gemini API Key (AIzaSy...)"
-                placeholderTextColor={C10_ACCENT}
-                secureTextEntry={!showApiKeyText}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  style={styles.passwordInput}
+                  value={geminiApiKey}
+                  onChangeText={(text) => {
+                    setGeminiApiKey(text);
+                    AsyncStorage.setItem(STORAGE_GEMINI_KEY, text).catch(() => {});
+                  }}
+                  placeholder="ระบุ Gemini API Key (AIzaSy...)"
+                  placeholderTextColor={C10_ACCENT}
+                  secureTextEntry={!showApiKeyText}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={styles.passwordEyeBtn}
+                  onPress={() => setShowApiKeyText(!showApiKeyText)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  activeOpacity={0.7}
+                >
+                  <EyeIcon size={16} color={C10_DARK} closed={!showApiKeyText} />
+                </TouchableOpacity>
+              </View>
+
               <Text style={styles.settingsInputHint}>
                 สร้าง Key ฟรี ไม่ต้องผูกบัตรได้ที่ Google AI Studio
               </Text>
@@ -1658,7 +1664,7 @@ export default function App() {
                 activeOpacity={0.8}
               >
                 <KeyIcon size={14} color={C10_DARK} />
-                <Text style={styles.guideStepBtnText}>รับ Gemini API Key ฟรีที่ Google AI Studio ↗</Text>
+                <Text style={styles.guideStepBtnText}>รับ Gemini API Key ฟรีที่ Google AI Studio</Text>
               </TouchableOpacity>
             </View>
 
@@ -1669,43 +1675,42 @@ export default function App() {
                   <KeyIcon size={16} color={C10_DARK} />
                   <Text style={styles.settingsCardTitle}>Groq API Key (สำรองฟรี)</Text>
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <View
-                    style={[
-                      styles.cloudStatusBadge,
-                      groqApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusOffline,
-                    ]}
-                  >
-                    <Text style={styles.cloudStatusBadgeText}>
-                      {groqApiKey.trim() ? '● มี Key แล้ว' : '○ ยังไม่มี Key'}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.showKeyToggleBtn}
-                    onPress={() => setShowGroqKeyText(!showGroqKeyText)}
-                    activeOpacity={0.7}
-                  >
-                    <EyeIcon size={15} color={C10_DARK} closed={!showGroqKeyText} />
-                    <Text style={styles.showKeyToggleText}>
-                      {showGroqKeyText ? 'ซ่อน' : 'แสดง'}
-                    </Text>
-                  </TouchableOpacity>
+                <View
+                  style={[
+                    styles.cloudStatusBadge,
+                    groqApiKey.trim() ? styles.cloudStatusConnected : styles.cloudStatusOffline,
+                  ]}
+                >
+                  <Text style={styles.cloudStatusBadgeText}>
+                    {groqApiKey.trim() ? '● มี Key แล้ว' : '○ ยังไม่มี Key'}
+                  </Text>
                 </View>
               </View>
 
-              <TextInput
-                style={styles.settingsInput}
-                value={groqApiKey}
-                onChangeText={(text) => {
-                  setGroqApiKey(text);
-                  AsyncStorage.setItem(STORAGE_GROQ_KEY, text).catch(() => {});
-                }}
-                placeholder="ระบุ Groq API Key (gsk_...)"
-                placeholderTextColor={C10_ACCENT}
-                secureTextEntry={!showGroqKeyText}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  style={styles.passwordInput}
+                  value={groqApiKey}
+                  onChangeText={(text) => {
+                    setGroqApiKey(text);
+                    AsyncStorage.setItem(STORAGE_GROQ_KEY, text).catch(() => {});
+                  }}
+                  placeholder="ระบุ Groq API Key (gsk_...)"
+                  placeholderTextColor={C10_ACCENT}
+                  secureTextEntry={!showGroqKeyText}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={styles.passwordEyeBtn}
+                  onPress={() => setShowGroqKeyText(!showGroqKeyText)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  activeOpacity={0.7}
+                >
+                  <EyeIcon size={16} color={C10_DARK} closed={!showGroqKeyText} />
+                </TouchableOpacity>
+              </View>
+
               <Text style={styles.settingsInputHint}>
                 ฟรี ไม่ต้องผูกบัตร — ขอได้ที่ console.groq.com/keys (30 req/min, 1,000 req/day)
               </Text>
@@ -1715,7 +1720,7 @@ export default function App() {
                 activeOpacity={0.8}
               >
                 <KeyIcon size={14} color={C10_DARK} />
-                <Text style={styles.guideStepBtnText}>รับ Groq API Key ฟรีที่ console.groq.com ↗</Text>
+                <Text style={styles.guideStepBtnText}>รับ Groq API Key ฟรีที่ console.groq.com</Text>
               </TouchableOpacity>
             </View>
 
@@ -1957,9 +1962,11 @@ export default function App() {
             {/* Personal Supabase Cloud Database Configuration Card */}
             <View style={styles.settingsCard}>
               <View style={styles.settingsCardHeader}>
-                <View style={styles.settingsCardTitleRow}>
+                <View style={[styles.settingsCardTitleRow, { flex: 1, minWidth: 0, marginRight: 8 }]}>
                   <CloudIcon size={16} color={C10_DARK} />
-                  <Text style={styles.settingsCardTitle}>Supabase ส่วนตัว (Cloud Backup)</Text>
+                  <Text style={styles.settingsCardTitle} numberOfLines={1}>
+                    Supabase Cloud
+                  </Text>
                 </View>
                 <View
                   style={[
@@ -1973,10 +1980,10 @@ export default function App() {
                 >
                   <Text style={styles.cloudStatusBadgeText}>
                     {supabaseStatus === 'connected'
-                      ? '● เชื่อมต่อแล้ว'
+                      ? 'เชื่อมต่อแล้ว'
                       : supabaseStatus === 'error'
-                      ? '● ติดปัญหา'
-                      : '○ บันทึกในเครื่อง'}
+                      ? 'ติดปัญหา'
+                      : 'ในเครื่อง'}
                   </Text>
                 </View>
               </View>
@@ -1993,7 +2000,7 @@ export default function App() {
               >
                 <InfoIcon size={15} color={C10_DARK} />
                 <Text style={[styles.simulate503Text, { fontWeight: '800' }]}>
-                  📖 วิธีสร้าง Supabase ฟรีของตัวเอง (3 ขั้นตอนง่ายๆ) ↗
+                  วิธีสร้าง Supabase ฟรีของตัวเอง (3 ขั้นตอนง่ายๆ)
                 </Text>
               </TouchableOpacity>
 
@@ -2012,33 +2019,31 @@ export default function App() {
                 autoCorrect={false}
               />
 
-              {/* Supabase Anon Key Input with Eye Toggle */}
-              <View style={[styles.settingsCardHeader, { marginTop: 8 }]}>
-                <Text style={styles.settingsInputLabel}>Supabase Anon / Public Key</Text>
+              {/* Supabase Anon Key Input with Embedded Eye Toggle */}
+              <Text style={[styles.settingsInputLabel, { marginTop: 8 }]}>Supabase Anon / Public Key</Text>
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  style={styles.passwordInput}
+                  value={supabaseAnonKey}
+                  onChangeText={(text) => {
+                    setSupabaseAnonKey(text);
+                    setSupabaseStatus('not_configured');
+                  }}
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                  placeholderTextColor={C10_ACCENT}
+                  secureTextEntry={!showSupabaseKeyText}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
                 <TouchableOpacity
-                  style={styles.showKeyToggleBtn}
+                  style={styles.passwordEyeBtn}
                   onPress={() => setShowSupabaseKeyText(!showSupabaseKeyText)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   activeOpacity={0.7}
                 >
-                  <EyeIcon size={14} color={C10_DARK} closed={!showSupabaseKeyText} />
-                  <Text style={styles.showKeyToggleText}>
-                    {showSupabaseKeyText ? 'ซ่อน' : 'แสดง'}
-                  </Text>
+                  <EyeIcon size={16} color={C10_DARK} closed={!showSupabaseKeyText} />
                 </TouchableOpacity>
               </View>
-              <TextInput
-                style={styles.settingsInput}
-                value={supabaseAnonKey}
-                onChangeText={(text) => {
-                  setSupabaseAnonKey(text);
-                  setSupabaseStatus('not_configured');
-                }}
-                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
-                placeholderTextColor={C10_ACCENT}
-                secureTextEntry={!showSupabaseKeyText}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
 
               {/* Action Buttons: Test Connection & Cloud Backup */}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
@@ -2498,7 +2503,7 @@ export default function App() {
                     activeOpacity={0.8}
                   >
                     <CloudIcon size={14} color={C10_DARK} />
-                    <Text style={styles.guideStepBtnText}>เปิดเว็บ Supabase Dashboard ↗</Text>
+                    <Text style={styles.guideStepBtnText}>เปิดเว็บ Supabase Dashboard</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2530,7 +2535,7 @@ export default function App() {
                   >
                     <CheckIcon size={14} color={C10_DARK} />
                     <Text style={[styles.guideStepBtnText, { fontWeight: '800' }]}>
-                      📋 คัดลอกคำสั่ง SQL สร้างตาราง (Copy SQL)
+                      คัดลอกคำสั่ง SQL สร้างตาราง (Copy SQL)
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -2594,8 +2599,9 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexShrink: 1,
-    marginRight: 10,
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
   },
   logoBadge: {
     flexDirection: 'row',
@@ -2606,8 +2612,9 @@ const styles = StyleSheet.create({
     backgroundColor: C30,
     borderWidth: 1.5,
     borderColor: C10_ACCENT,
-    marginRight: 10,
+    marginRight: 8,
     gap: 4,
+    flexShrink: 0,
   },
   logoBadgeText: {
     color: C10_DARK,
@@ -2616,10 +2623,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   title: {
-    fontSize: 20,
+    fontSize: 19,
     fontWeight: '900',
     color: C10_DARK,
     letterSpacing: 0.5,
+    flexShrink: 1,
   },
   subtitle: {
     fontSize: 11,
@@ -2631,23 +2639,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: C30,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
     borderRadius: 20,
     borderWidth: 1.5,
     borderColor: C10_ACCENT,
     flexShrink: 0,
+    maxWidth: 95,
   },
   headerStatusIndicator: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    marginRight: 6,
+    marginRight: 5,
+    flexShrink: 0,
   },
   headerStatusText: {
     color: C10_DARK,
     fontSize: 11,
     fontWeight: '800',
+    flexShrink: 1,
   },
   container: {
     width: '100%',
@@ -3574,6 +3585,33 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     fontWeight: '700',
   },
+  passwordInputContainer: {
+    position: 'relative',
+    width: '100%',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  passwordInput: {
+    backgroundColor: C50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: C10_ACCENT,
+    color: C10_DARK,
+    paddingVertical: 11,
+    paddingLeft: 12,
+    paddingRight: 42,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  passwordEyeBtn: {
+    position: 'absolute',
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 28,
+  },
   settingsInputHint: {
     fontSize: 11,
     color: C10_DARK,
@@ -3685,6 +3723,8 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 8,
     borderWidth: 1,
+    flexShrink: 0,
+    alignSelf: 'center',
   },
   cloudStatusConnected: {
     backgroundColor: '#E8F5E9',
