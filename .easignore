@@ -9,6 +9,10 @@ node_modules/
 dist/
 web-build/
 *.tsbuildinfo
+*.aab
+*.apk
+*.mp4
+*.webm
 
 # Native folders (allow EAS to run prebuild from app.json)
 /ios
