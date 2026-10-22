@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=720, height=1280, initial-scale=1.0">
+  <title>Rate My Meal - Video Render</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800;900&family=Prompt:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --c50: #F9E6A8;
+      --c30: #F2A900;
+      --c10-accent: #CC6F00;
+      --c10-dark: #4D2A00;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      width: 720px;
+      height: 1280px;
+      overflow: hidden;
+      background: var(--c50);
+      font-family: 'Prompt', 'Plus Jakarta Sans', sans-serif;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 30px;
+    }
+    /* Subtle Neo-Brutalism Pattern Background */
+    .bg-grid {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        radial-gradient(var(--c10-accent) 1px, transparent 1px);
+      background-size: 24px 24px;
+      opacity: 0.15;
+      pointer-events: none;
+    }
+    /* Top Story Progress Bar */
+    .story-progress-bar {
+      width: 100%;
+      height: 6px;
+      background: rgba(77, 42, 0, 0.18);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      z-index: 10;
+    }
+    .story-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: var(--c10-dark);
+      transition: width 0.1s linear;
+    }
+    /* Floating Header Caption */
+    .header-caption-card {
+      width: 100%;
+      background: var(--c10-dark);
+      color: #FFFFFF;
+      padding: 16px 20px;
+      border-radius: 20px;
+      box-shadow: 6px 6px 0px rgba(77, 42, 0, 0.25);
+      text-align: center;
+      margin-bottom: 28px;
+      z-index: 10;
+      min-height: 90px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      transition: all 0.3s ease;
+    }
+    .caption-title {
+      font-size: 24px;
+      font-weight: 800;
+      line-height: 1.35;
+      color: #FFF;
+    }
+    .caption-highlight {
+      color: #FFD452;
+    }
+    .caption-sub {
+      font-size: 15px;
+      font-weight: 600;
+      color: #E6D0BA;
+      margin-top: 4px;
+    }
+
+    /* Phone Device Mockup Container */
+    .device-shell {
+      position: relative;
+      width: 500px;
+      height: 900px;
+      background: #FFFFFF;
+      border: 8px solid var(--c10-dark);
+      border-radius: 48px;
+      box-shadow: 12px 12px 0px var(--c10-dark);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      z-index: 5;
+    }
+    /* Phone Notch / Island */
+    .device-notch {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 140px;
+      height: 28px;
+      background: var(--c10-dark);
+      border-radius: 20px;
+      z-index: 50;
+    }
+    /* Top App Status Bar */
+    .app-header {
+      background: var(--c30);
+      border-bottom: 3px solid var(--c10-dark);
+      padding: 50px 24px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .app-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .app-brand-logo {
+      width: 32px;
+      height: 32px;
+      background: var(--c10-dark);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--c50);
+      font-size: 18px;
+      font-weight: 900;
+    }
+    .app-brand-name {
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--c10-dark);
+    }
+    .app-status-badge {
+      background: #FFF;
+      color: var(--c10-dark);
+      border: 2px solid var(--c10-dark);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    /* Stage Area Inside Phone */
+    .stage-viewport {
+      flex: 1;
+      position: relative;
+      background: var(--c50);
+      overflow: hidden;
+    }
+
+    /* CAMERA SCAN SCENE */
+    .scene-camera {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.4s ease;
+    }
+    .food-image {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .camera-darken {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.25);
+    }
+    .viewfinder {
+      position: absolute;
+      width: 340px;
+      height: 340px;
+      border: 3px dashed rgba(242, 169, 0, 0.9);
+      border-radius: 28px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.3);
+    }
+    .corner {
+      position: absolute;
+      width: 36px;
+      height: 36px;
+      border-color: #F2A900;
+      border-style: solid;
+    }
+    .c-tl { top: -4px; left: -4px; border-width: 6px 0 0 6px; border-top-left-radius: 16px; }
+    .c-tr { top: -4px; right: -4px; border-width: 6px 6px 0 0; border-top-right-radius: 16px; }
+    .c-bl { bottom: -4px; left: -4px; border-width: 0 0 6px 6px; border-bottom-left-radius: 16px; }
+    .c-br { bottom: -4px; right: -4px; border-width: 0 6px 6px 0; border-bottom-right-radius: 16px; }
+
+    .scan-line {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: linear-gradient(90deg, transparent, #FFD452, #FF9100, transparent);
+      box-shadow: 0 0 20px #FF9100;
+      top: 10%;
+      opacity: 0;
+    }
+    .scan-line.active {
+      opacity: 1;
+      animation: scanAnim 1.6s infinite alternate ease-in-out;
+    }
+    @keyframes scanAnim {
+      0% { top: 12%; }
+      100% { top: 88%; }
+    }
+    .scan-prompt-pill {
+      position: absolute;
+      bottom: 40px;
+      background: var(--c30);
+      color: var(--c10-dark);
+      border: 3px solid var(--c10-dark);
+      border-radius: 30px;
+      padding: 10px 24px;
+      font-size: 17px;
+      font-weight: 800;
+      box-shadow: 4px 4px 0px var(--c10-dark);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* FLASH EFFECT */
+    .flash-overlay {
+      position: absolute;
+      inset: 0;
+      background: #FFFFFF;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease-out;
+      z-index: 40;
+    }
+    .flash-overlay.active {
+      opacity: 0.9;
+    }
+
+    /* RESULT SCENE */
+    .scene-result {
+      position: absolute;
+      inset: 0;
+      background: var(--c50);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transform: translateY(100%);
+      transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.15);
+      z-index: 30;
+      overflow-y: auto;
+    }
+    .scene-result.active {
+      transform: translateY(0);
+    }
+    .meal-name-card {
+      background: var(--c30);
+      border: 3px solid var(--c10-dark);
+      border-radius: 16px;
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 3px 3px 0px var(--c10-dark);
+    }
+    .meal-name-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--c10-dark);
+    }
+    .meal-time-tag {
+      font-size: 13px;
+      font-weight: 700;
+      color: #664314;
+    }
+    /* Big Calorie Box */
+    .calories-hero-card {
+      background: #FFFFFF;
+      border: 3px solid var(--c10-dark);
+      border-radius: 20px;
+      padding: 18px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 4px 4px 0px var(--c10-dark);
+    }
+    .cal-left-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: #664314;
+    }
+    .cal-badge {
+      display: inline-block;
+      margin-top: 4px;
+      background: #FFEBEE;
+      color: #D32F2F;
+      border: 1.5px solid #D32F2F;
+      border-radius: 8px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .cal-number {
+      font-size: 42px;
+      font-weight: 900;
+      color: #D32F2F;
+    }
+    /* Macros 3 Grid */
+    .macros-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .macro-card {
+      background: #FFFFFF;
+      border: 3px solid var(--c10-dark);
+      border-radius: 16px;
+      padding: 12px 8px;
+      text-align: center;
+      box-shadow: 3px 3px 0px var(--c10-dark);
+    }
+    .macro-gram {
+      font-size: 22px;
+      font-weight: 900;
+      color: var(--c10-dark);
+    }
+    .macro-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #7A5B36;
+      margin-top: 2px;
+    }
+    .macro-bar {
+      height: 6px;
+      background: #EEE;
+      border-radius: 3px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .macro-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+    }
+    /* AI Coach Roast Card */
+    .roast-card-box {
+      background: #FFE0A3;
+      border: 3px solid var(--c10-dark);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 4px 4px 0px var(--c10-dark);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transform: scale(0.95);
+      opacity: 0;
+      transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    .roast-card-box.visible {
+      transform: scale(1);
+      opacity: 1;
+    }
+    .roast-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .roast-badge-pill {
+      background: var(--c10-dark);
+      color: #FFFFFF;
+      font-size: 13px;
+      font-weight: 800;
+      padding: 4px 12px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .roast-score-badge {
+      font-size: 18px;
+      font-weight: 900;
+      color: #C62828;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .roast-speech-text {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.5;
+      color: var(--c10-dark);
+      background: #FFFFFF;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 2px solid var(--c10-dark);
+    }
+    /* OUTRO SCENE */
+    .scene-outro {
+      position: absolute;
+      inset: 0;
+      background: var(--c50);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 30px;
+      text-align: center;
+      transform: translateY(100%);
+      transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.15);
+      z-index: 35;
+    }
+    .scene-outro.active {
+      transform: translateY(0);
+    }
+    .outro-app-icon {
+      width: 140px;
+      height: 140px;
+      border-radius: 34px;
+      border: 5px solid var(--c10-dark);
+      box-shadow: 8px 8px 0px var(--c10-dark);
+      margin-bottom: 24px;
+    }
+    .outro-app-name {
+      font-size: 36px;
+      font-weight: 900;
+      color: var(--c10-dark);
+      margin-bottom: 6px;
+    }
+    .outro-app-desc {
+      font-size: 17px;
+      font-weight: 700;
+      color: #7A5B36;
+      margin-bottom: 30px;
+    }
+    .google-play-btn {
+      background: var(--c30);
+      color: var(--c10-dark);
+      border: 4px solid var(--c10-dark);
+      border-radius: 24px;
+      padding: 16px 36px;
+      font-size: 20px;
+      font-weight: 900;
+      box-shadow: 6px 6px 0px var(--c10-dark);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <!-- Story Progress Bar -->
+  <div class="story-progress-bar">
+    <div id="progressFill" class="story-progress-fill"></div>
+  </div>
+
+  <!-- Dynamic Animated Caption Card on Top -->
+  <div class="header-caption-card">
+    <div id="captionTitle" class="caption-title">สงสัยมั้ย... จานโปรดตรงหน้ากี่แคลอรี่กันแน่?! 🍛👀</div>
+    <div id="captionSub" class="caption-sub">Rate My Meal – AI Food Scanner & Nutrition Rating</div>
+  </div>
+
+  <!-- Modern Smartphone Device -->
+  <div class="device-shell">
+    <div class="device-notch"></div>
+
+    <div class="app-header">
+      <div class="app-brand">
+        <div class="app-brand-logo">R</div>
+        <div class="app-brand-name">Rate My Meal</div>
+      </div>
+      <div class="app-status-badge">AI Ready ⚡</div>
+    </div>
+
+    <div class="stage-viewport">
+      <!-- FLASH -->
+      <div id="flashOverlay" class="flash-overlay"></div>
+
+      <!-- SCENE 1: CAMERA SCANNER -->
+      <div id="sceneCamera" class="scene-camera">
+        <img src="https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=800&auto=format&fit=crop&q=80" alt="ข้าวกะเพราหมูกรอบ" class="food-image" />
+        <div class="camera-darken"></div>
+
+        <div class="viewfinder">
+          <div class="corner c-tl"></div>
+          <div class="corner c-tr"></div>
+          <div class="corner c-bl"></div>
+          <div class="corner c-br"></div>
+          <div id="scanLine" class="scan-line active"></div>
+        </div>
+
+        <div class="scan-prompt-pill">
+          <span>📸</span> กำลังสแกนอาหารด้วย AI...
+        </div>
+      </div>
+
+      <!-- SCENE 2: RESULT & NUTRITION & ROAST -->
+      <div id="sceneResult" class="scene-result">
+        <div class="meal-name-card">
+          <div class="meal-name-title">🍛 ข้าวกะเพราหมูกรอบไข่ดาว</div>
+          <div class="meal-time-tag">มื้อเที่ยง 12:30 น.</div>
+        </div>
+
+        <div class="calories-hero-card">
+          <div>
+            <div class="cal-left-title">พลังงานทั้งหมด (Calories)</div>
+            <div class="cal-badge">🔥 มื้อแคลอรี่สูง (Heavy Meal)</div>
+          </div>
+          <div id="calNumber" class="cal-number">765</div>
+        </div>
+
+        <!-- 3 Macros -->
+        <div class="macros-row">
+          <div class="macro-card">
+            <div class="macro-gram">28g</div>
+            <div class="macro-name">🥩 โปรตีน</div>
+            <div class="macro-bar"><div class="macro-bar-fill" style="width: 75%; background: #2E7D32;"></div></div>
+          </div>
+          <div class="macro-card">
+            <div class="macro-gram">68g</div>
+            <div class="macro-name">🍚 คาร์บ</div>
+            <div class="macro-bar"><div class="macro-bar-fill" style="width: 85%; background: #F57C00;"></div></div>
+          </div>
+          <div class="macro-card">
+            <div class="macro-gram" style="color: #D32F2F;">42g</div>
+            <div class="macro-name">🧈 ไขมัน</div>
+            <div class="macro-bar"><div class="macro-bar-fill" style="width: 90%; background: #D32F2F;"></div></div>
+          </div>
+        </div>
+
+        <!-- AI Coach Roast Card -->
+        <div id="roastCard" class="roast-card-box">
+          <div class="roast-top-bar">
+            <span class="roast-badge-pill">🤖 AI COACH ROAST</span>
+            <span class="roast-score-badge">⭐ 4.5 / 10</span>
+          </div>
+          <div class="roast-speech-text">
+            "แหม... กะเพราหมูกรอบไข่ดาวกรอบฟู! รสชาติ 10 เต็ม แต่แคลอรี่ <strong>765 kcal</strong> จุกๆ! หมูกรอบแทบกระโดดกอดพุง วิ่งรอบสนาม 8 รอบด่วนจ้าแม่! 🏃‍♂️💨"
+          </div>
+        </div>
+
+        <div style="text-align: center; padding: 10px; background: #FFF; border: 2.5px solid var(--c10-dark); border-radius: 14px; font-size: 13px; font-weight: 800; color: var(--c10-dark); box-shadow: 2px 2px 0px var(--c10-dark);">
+          💾 บันทึกประวัติอาหารสำเร็จ (100% On-Device Privacy)
+        </div>
+      </div>
+
+      <!-- SCENE 3: OUTRO & CALL TO ACTION -->
+      <div id="sceneOutro" class="scene-outro">
+        <img src="assets/icon.png" alt="Rate My Meal Icon" class="outro-app-icon" />
+        <div class="outro-app-name">Rate My Meal</div>
+        <div class="outro-app-desc">AI Meal Scanner & Nutrition Rating</div>
+
+        <div class="google-play-btn">
+          <span>📲</span> ดาวน์โหลดฟรีบน Google Play
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Exact 35-Second Timeline Controller
+    const TOTAL_MS = 35000;
+    let startTime = Date.now();
+
+    function update() {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / TOTAL_MS, 1);
+      document.getElementById('progressFill').style.width = (progress * 100) + '%';
+
+      // 0s - 4.5s: Hook
+      if (elapsed < 4500) {
+        document.getElementById('captionTitle').innerHTML = "สงสัยมั้ย... <span class='caption-highlight'>จานโปรดตรงหน้ากี่แคลอรี่กันแน่?!</span> 🍛👀";
+        document.getElementById('captionSub').innerText = "ไม่ต้องเปิดตารางคำนวณให้ปวดหัว!";
+      }
+      // 4.5s - 10s: Action (Camera scanning)
+      else if (elapsed < 10000) {
+        document.getElementById('captionTitle').innerHTML = "แค่เปิดแอปแล้ว <span class='caption-highlight'>ถ่ายรูปสแกนใน 1 วินาที!</span> 📸⚡";
+        document.getElementById('captionSub').innerText = "AI ตรวจจับชื่ออาหารและสัดส่วนจานให้อัตโนมัติ";
+        if (elapsed > 9000 && !document.getElementById('flashOverlay').classList.contains('done')) {
+          document.getElementById('flashOverlay').classList.add('active');
+          document.getElementById('flashOverlay').classList.add('done');
+          setTimeout(() => document.getElementById('flashOverlay').classList.remove('active'), 200);
+        }
+      }
+      // 10s - 18s: Results (Calories & Macros)
+      else if (elapsed < 18000) {
+        document.getElementById('sceneResult').classList.add('active');
+        document.getElementById('captionTitle').innerHTML = "ตู้ม! <span class='caption-highlight'>วิเคราะห์แคลอรี่ & สารอาหารออกมาเป๊ะๆ!</span> 🔥";
+        document.getElementById('captionSub').innerText = "กะเพราหมูกรอบ 765 kcal • โปรตีน คาร์บ ไขมัน แยกครบ";
+      }
+      // 18s - 28s: AI Coach Roast
+      else if (elapsed < 28000) {
+        document.getElementById('roastCard').classList.add('visible');
+        document.getElementById('captionTitle').innerHTML = "หมัดเด็ด! <span class='caption-highlight'>AI Coach Roast แซวอาหารสุดกวน</span> 😂";
+        document.getElementById('captionSub').innerText = "ให้คะแนนสุขภาพ พร้อมคำแนะนำที่ทั้งฮาและโดนเตือนสติ!";
+      }
+      // 28s - 35s: Outro & Call to Action
+      else {
+        document.getElementById('sceneOutro').classList.add('active');
+        document.getElementById('captionTitle').innerHTML = "สายกิน สายสุขภาพ <span class='caption-highlight'>โหลดฟรีได้แล้ววันนี้!</span> 📲✨";
+        document.getElementById('captionSub').innerText = "ค้นหา \"Rate My Meal\" บน Google Play Store";
+      }
+
+      if (elapsed < TOTAL_MS) {
+        requestAnimationFrame(update);
+      }
+    }
+
+    requestAnimationFrame(update);
+  </script>
+</body>
+</html>
