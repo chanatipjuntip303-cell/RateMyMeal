@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rate My Meal - Interactive Play Store Video Showcase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800;900&family=Prompt:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --c50: #F9E6A8;
+      --c30: #F2A900;
+      --c10-accent: #CC6F00;
+      --c10-dark: #4D2A00;
+      --phone-bg: #FFFDF9;
+      --card-bg: #FFFFFF;
+      --border-dark: #4D2A00;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      background: #181512;
+      color: #FFFFFF;
+      font-family: 'Prompt', 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .header-bar {
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .header-bar h1 {
+      font-size: 20px;
+      color: var(--c50);
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .header-bar p {
+      font-size: 13px;
+      color: #A89F91;
+    }
+    /* Phone Frame (9:16 Aspect Ratio) */
+    .phone-container {
+      position: relative;
+      width: 360px;
+      height: 640px;
+      background: var(--c50);
+      border: 8px solid #2B2620;
+      border-radius: 40px;
+      overflow: hidden;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.6), 0 0 0 2px rgba(255,255,255,0.1);
+      display: flex;
+      flex-direction: column;
+    }
+    /* Dynamic Island / Notch */
+    .notch {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100px;
+      height: 22px;
+      background: #2B2620;
+      border-radius: 20px;
+      z-index: 100;
+    }
+    /* Progress Bar on Top (Reels/TikTok style) */
+    .story-progress {
+      position: absolute;
+      top: 36px;
+      left: 12px;
+      right: 12px;
+      height: 4px;
+      background: rgba(77, 42, 0, 0.2);
+      border-radius: 2px;
+      z-index: 90;
+      overflow: hidden;
+    }
+    .story-progress-fill {
+      width: 0%;
+      height: 100%;
+      background: var(--c10-dark);
+      transition: width 0.1s linear;
+    }
+    /* Scene Container */
+    .scene-viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      margin-top: 44px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Top Floating Headline Subtitle */
+    .voice-caption-box {
+      background: var(--c10-dark);
+      color: var(--c50);
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      font-weight: 800;
+      text-align: center;
+      line-height: 1.4;
+      margin-bottom: 12px;
+      box-shadow: 0 4px 12px rgba(77, 42, 0, 0.25);
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    .voice-caption-highlight {
+      color: #FFD452;
+      display: inline-block;
+    }
+    /* Main Screen Mockup Area */
+    .screen-stage {
+      flex: 1;
+      position: relative;
+      background: #FFFFFF;
+      border: 3px solid var(--c10-dark);
+      border-radius: 22px;
+      overflow: hidden;
+      box-shadow: 4px 4px 0px var(--c10-dark);
+      display: flex;
+      flex-direction: column;
+    }
+    /* Scene 1: Camera Scan */
+    .scene-camera {
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background: #111;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .food-photo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .scan-viewfinder {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 220px;
+      height: 220px;
+      border: 2px dashed rgba(242, 169, 0, 0.8);
+      border-radius: 20px;
+      pointer-events: none;
+    }
+    .scan-corner {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border-color: #F2A900;
+      border-style: solid;
+    }
+    .corner-tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 12px; }
+    .corner-tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 12px; }
+    .corner-bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 12px; }
+    .corner-br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 12px; }
+
+    .laser-beam {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, #FFD452, #FF9100, transparent);
+      box-shadow: 0 0 15px #FF9100;
+      top: 0;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .laser-active {
+      opacity: 1;
+      animation: scanLaser 1.5s infinite alternate ease-in-out;
+    }
+    @keyframes scanLaser {
+      0% { top: 10%; }
+      100% { top: 90%; }
+    }
+    /* Shutter Button */
+    .shutter-bar {
+      position: absolute;
+      bottom: 16px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .shutter-btn {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--c30);
+      border: 3px solid var(--c10-dark);
+      box-shadow: 2px 2px 0px var(--c10-dark);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      cursor: pointer;
+      animation: pulseBtn 1s infinite alternate;
+    }
+    @keyframes pulseBtn {
+      0% { transform: scale(1); }
+      100% { transform: scale(1.08); }
+    }
+    /* Scene 2 & 3: Results & Roast */
+    .result-sheet {
+      position: absolute;
+      inset: 0;
+      background: var(--c50);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+      transform: translateY(100%);
+      transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1);
+    }
+    .result-sheet.active {
+      transform: translateY(0);
+    }
+    .badge-meal-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--c10-dark);
+      background: var(--c30);
+      padding: 6px 12px;
+      border-radius: 10px;
+      border: 2px solid var(--c10-dark);
+      display: inline-block;
+      align-self: flex-start;
+    }
+    .calories-card {
+      background: #FFFFFF;
+      border: 2px solid var(--c10-dark);
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 2px 2px 0px var(--c10-dark);
+    }
+    .calories-big {
+      font-size: 28px;
+      font-weight: 900;
+      color: #D32F2F;
+    }
+    .macros-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .macro-pill {
+      background: #FFFFFF;
+      border: 2px solid var(--c10-dark);
+      border-radius: 10px;
+      padding: 6px 4px;
+      text-align: center;
+      box-shadow: 1px 1px 0px var(--c10-dark);
+    }
+    .macro-val {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--c10-dark);
+    }
+    .macro-lbl {
+      font-size: 10px;
+      color: #7A5B36;
+    }
+    /* AI Roast Card */
+    .roast-card {
+      background: #FFE8BF;
+      border: 2px solid var(--c10-dark);
+      border-radius: 14px;
+      padding: 12px;
+      position: relative;
+      box-shadow: 3px 3px 0px var(--c10-dark);
+      animation: popIn 0.3s ease;
+    }
+    .roast-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .coach-pill {
+      background: var(--c10-dark);
+      color: #FFFFFF;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .score-badge {
+      font-size: 14px;
+      font-weight: 900;
+      color: #D32F2F;
+    }
+    .roast-text {
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: var(--c10-dark);
+      font-weight: 600;
+    }
+    /* Controls Bar */
+    .controls-bar {
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 360px;
+    }
+    .ctrl-btn {
+      background: var(--c30);
+      color: var(--c10-dark);
+      border: 2px solid var(--c10-dark);
+      font-weight: 800;
+      font-size: 14px;
+      padding: 10px 18px;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 2px 2px 0px var(--c10-dark);
+      transition: all 0.1s;
+    }
+    .ctrl-btn:active {
+      transform: translate(2px, 2px);
+      box-shadow: 0px 0px 0px var(--c10-dark);
+    }
+    .time-display {
+      font-family: monospace;
+      font-size: 14px;
+      color: #DDD;
+      flex: 1;
+      text-align: right;
+    }
+    @keyframes popIn {
+      0% { transform: scale(0.9); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header-bar">
+    <h1>🎬 Rate My Meal - Showcase Demo Preview</h1>
+    <p>วิดีโอจำลองรีวิว 35 วินาที สำหรับบันทึกหรืออ้างอิงนำขึ้น Google Play Store</p>
+  </div>
+
+  <!-- Smart Phone Player (9:16) -->
+  <div class="phone-container">
+    <div class="notch"></div>
+
+    <!-- Story progress bar -->
+    <div class="story-progress">
+      <div id="progressFill" class="story-progress-fill"></div>
+    </div>
+
+    <div class="scene-viewport">
+      <!-- Dynamic Voice Caption -->
+      <div id="voiceCaption" class="voice-caption-box">
+        กดปุ่ม <span class="voice-caption-highlight">"เล่นคลิปรีวิว ▶"</span> ด้านล่างเพื่อเริ่มดูตัวอย่าง
+      </div>
+
+      <!-- App Screen Stage -->
+      <div class="screen-stage">
+        <!-- Scene 1: Camera Scanner -->
+        <div class="scene-camera">
+          <img src="https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=800&auto=format&fit=crop&q=80" alt="ข้าวกะเพราหมูกรอบ" class="food-photo" />
+
+          <!-- Viewfinder overlay -->
+          <div class="scan-viewfinder">
+            <div class="scan-corner corner-tl"></div>
+            <div class="scan-corner corner-tr"></div>
+            <div class="scan-corner corner-bl"></div>
+            <div class="scan-corner corner-br"></div>
+            <div id="laserBeam" class="laser-beam"></div>
+          </div>
+
+          <div class="shutter-bar">
+            <div id="shutterBtn" class="shutter-btn">📸</div>
+          </div>
+        </div>
+
+        <!-- Scene 2 & 3: Results & AI Roast Sheet -->
+        <div id="resultSheet" class="result-sheet">
+          <div class="badge-meal-title">🍛 ข้าวกะเพราหมูกรอบไข่ดาว</div>
+
+          <div class="calories-card">
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: #7A5B36;">พลังงานทั้งหมด</div>
+              <div style="font-size: 11px; color: #888;">High Calorie Alert 🔥</div>
+            </div>
+            <div id="caloriesCount" class="calories-big">0 kcal</div>
+          </div>
+
+          <!-- Macros -->
+          <div class="macros-grid">
+            <div class="macro-pill">
+              <div class="macro-val">28g</div>
+              <div class="macro-lbl">โปรตีน</div>
+            </div>
+            <div class="macro-pill">
+              <div class="macro-val">68g</div>
+              <div class="macro-lbl">คาร์บ</div>
+            </div>
+            <div class="macro-pill">
+              <div class="macro-val" style="color: #D32F2F;">42g</div>
+              <div class="macro-lbl">ไขมัน</div>
+            </div>
+          </div>
+
+          <!-- AI Coach Roast Card -->
+          <div id="roastCard" class="roast-card">
+            <div class="roast-header">
+              <span class="coach-pill">🤖 AI COACH ROAST</span>
+              <span class="score-badge">⭐ 4.5 / 10</span>
+            </div>
+            <p class="roast-text">
+              "แหม... กะเพราหมูกรอบไข่ดาวกรอบฟู! รสชาติให้ 10 เต็ม แต่แคลอรี่ <strong>765 kcal</strong> จุกๆ! หมูกรอบแทบจะกระโดดกอดพุง วิ่งรอบสนาม 8 รอบด่วนจ้าแม่! 🏃‍♂️💨"
+            </p>
+          </div>
+
+          <!-- Action Tag -->
+          <div style="text-align: center; margin-top: auto; padding: 6px; background: #FFFFFF; border: 2px solid var(--c10-dark); border-radius: 12px; font-size: 11px; font-weight: 800; color: var(--c10-dark);">
+            💾 บันทึกลงไดอารี่ในเครื่องสำเร็จ (100% Privacy)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Player Controls -->
+  <div class="controls-bar">
+    <button id="playBtn" class="ctrl-btn" onclick="togglePlay()">เล่นคลิปรีวิว ▶</button>
+    <button class="ctrl-btn" style="background: #FFF; color: #333;" onclick="resetDemo()">รีเซ็ต ↺</button>
+    <div id="timeText" class="time-display">00:00 / 00:35</div>
+  </div>
+
+  <script>
+    let isPlaying = false;
+    let currentSeconds = 0;
+    const TOTAL_SECONDS = 35;
+    let timerInterval = null;
+
+    // Timeline Script Sequence
+    const timeline = [
+      {
+        start: 0,
+        end: 4,
+        caption: "เคยสงสัยมั้ยว่า... <span class='voice-caption-highlight'>จานโปรดตรงหน้ากี่แคลอรี่กันแน่?!</span> 🍛👀",
+        action: () => {
+          document.getElementById('resultSheet').classList.remove('active');
+          document.getElementById('laserBeam').classList.remove('laser-active');
+        }
+      },
+      {
+        start: 4,
+        end: 9,
+        caption: "แค่เปิดแอป <strong>Rate My Meal</strong> แล้วกดถ่ายรูปใน 1 วินาที! 📸",
+        action: () => {
+          document.getElementById('laserBeam').classList.add('laser-active');
+          playBeep(520, 0.1);
+        }
+      },
+      {
+        start: 9,
+        end: 17,
+        caption: "ปังมาก! <span class='voice-caption-highlight'>AI สแกนและวิเคราะห์แคลอรี่ออกมาเป๊ะๆ!</span> 🔥",
+        action: () => {
+          document.getElementById('laserBeam').classList.remove('laser-active');
+          document.getElementById('resultSheet').classList.add('active');
+          animateCalories(765);
+          playSuccessChime();
+        }
+      },
+      {
+        start: 17,
+        end: 27,
+        caption: "ไฮไลท์เด็ด! <span class='voice-caption-highlight'>AI Coach Roast แซวมื้ออาหารสุดกวน</span> ฮาน้ำตาเล็ด! 😂",
+        action: () => {
+          document.getElementById('roastCard').style.animation = 'none';
+          document.getElementById('roastCard').offsetHeight; // trigger reflow
+          document.getElementById('roastCard').style.animation = 'popIn 0.4s ease';
+          playBeep(880, 0.15);
+        }
+      },
+      {
+        start: 27,
+        end: 35,
+        caption: "บันทึกประวัติให้ทันที! <span class='voice-caption-highlight'>โหลดฟรีได้แล้วบน Google Play Store!</span> 📲✨",
+        action: () => {}
+      }
+    ];
+
+    // Web Audio API Sound Generation
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playBeep(freq, duration) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    }
+
+    function playSuccessChime() {
+      playBeep(587.33, 0.1);
+      setTimeout(() => playBeep(880, 0.25), 100);
+    }
+
+    function animateCalories(target) {
+      const el = document.getElementById('caloriesCount');
+      let start = 0;
+      const duration = 1200;
+      const step = 20;
+      const increment = target / (duration / step);
+      const timer = setInterval(() => {
+        start += increment;
+        if (start >= target) {
+          el.innerText = target + " kcal";
+          clearInterval(timer);
+        } else {
+          el.innerText = Math.round(start) + " kcal";
+        }
+      }, step);
+    }
+
+    function togglePlay() {
+      if (isPlaying) {
+        pauseDemo();
+      } else {
+        startDemo();
+      }
+    }
+
+    function startDemo() {
+      if (currentSeconds >= TOTAL_SECONDS) resetDemo();
+      isPlaying = true;
+      document.getElementById('playBtn').innerText = "พักชั่วคราว ⏸";
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      timerInterval = setInterval(() => {
+        currentSeconds += 0.2;
+        updateUI();
+
+        if (currentSeconds >= TOTAL_SECONDS) {
+          pauseDemo();
+          document.getElementById('playBtn').innerText = "เล่นอีกครั้ง ↺";
+        }
+      }, 200);
+    }
+
+    function pauseDemo() {
+      isPlaying = false;
+      clearInterval(timerInterval);
+      document.getElementById('playBtn').innerText = "เล่นคลิปต่อ ▶";
+    }
+
+    function resetDemo() {
+      pauseDemo();
+      currentSeconds = 0;
+      document.getElementById('playBtn').innerText = "เล่นคลิปรีวิว ▶";
+      document.getElementById('resultSheet').classList.remove('active');
+      document.getElementById('laserBeam').classList.remove('laser-active');
+      document.getElementById('caloriesCount').innerText = "0 kcal";
+      document.getElementById('voiceCaption').innerHTML = "กดปุ่ม <span class='voice-caption-highlight'>\"เล่นคลิปรีวิว ▶\"</span> ด้านล่างเพื่อเริ่มดูตัวอย่าง";
+      document.getElementById('progressFill').style.width = '0%';
+      document.getElementById('timeText').innerText = "00:00 / 00:35";
+    }
+
+    let lastExecutedIndex = -1;
+    function updateUI() {
+      const percent = (currentSeconds / TOTAL_SECONDS) * 100;
+      document.getElementById('progressFill').style.width = percent + '%';
+
+      const secInt = Math.floor(currentSeconds);
+      const s = secInt < 10 ? '0' + secInt : secInt;
+      document.getElementById('timeText').innerText = `00:${s} / 00:35`;
+
+      // Find current scene
+      const sceneIndex = timeline.findIndex(t => currentSeconds >= t.start && currentSeconds < t.end);
+      if (sceneIndex !== -1) {
+        const scene = timeline[sceneIndex];
+        document.getElementById('voiceCaption').innerHTML = scene.caption;
+        if (sceneIndex !== lastExecutedIndex) {
+          scene.action();
+          lastExecutedIndex = sceneIndex;
+        }
+      }
+    }
+  </script>
+</body>
+</html>
